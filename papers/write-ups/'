@@ -1,6 +1,6 @@
 ---
 title: The Design of Practical System for Fault-Tolerance Virtual Machine
-description: A state machine replication approach to replicate machine-level state for fault-tolerant VM
+description:
 tags: ["Fault-Tolerance", "Backup"]
 reference: https://pdos.csail.mit.edu/6.824/papers/vm-ft.pdf
 ---
@@ -19,6 +19,7 @@ reference: https://pdos.csail.mit.edu/6.824/papers/vm-ft.pdf
 * Failure Detection and Response
 * (Re-)Start FT VMs
 * Logging channel flow control
+
 
 ## Basic Fault-Tolerance Design
 
@@ -82,15 +83,10 @@ Solution 1: detect I/O race => force them to run sequentially in the same way on
 Problem 2: disk operations directly access the memory of a VM via DMA => Memory Race can happen
 Solution 2: Memory Page Protection using bounce buffer
 
-Problem 3: disk IOs that are outstanding (i.e. not completed) on the primary when a failure happens, and the backup takes over
-Solution 3: re-issue the disk IOs on the newly-promoted primary because these operations are idempotent.
 
-## Shared vs Non-Shared Disk
+## Implementation Details for Network IOs
 
-Why non-shared disk?
 
-* long-distance FT
-* cons: one more state needs to keep in-sync, the above solution for handling split-brain problem does not work
 
 ## Questions
 
@@ -107,7 +103,7 @@ Q. What are the ways of replicating states to backup machine?
 * Sate Machine Approach(Replicate Computation)
     * keep them in sync by letting them receiving the same inputs with same order
     * pros: need less bandwidth, ideal for deterministic state transition and the information for state transition is less than the information for memory update
-    * cons: need a way to handle non-deterministic operations (e.g. reading a time of the clock, I/O Interrupt events, random number)
+    * cons: need a way to handle non-deterministic operations (e.g. reading a time of the clock, I/O Interrupt events)
 
 
 Q. Why is SMR approach suitable for VM?
@@ -151,9 +147,10 @@ Q. How do Section 3.4's bounce buffers help avoid races?
 
 The problem arises when a network packet or requested disk block arrives at the primary and needs to be copied into the primary's memory. Without FT, the relevant hardware copies the data into memory while software is executing. Guest instructions could read that memory during the DMA; depending on exact timing, **the guest might see or not see the DMA'd data** (this is the race). It would be bad if the primary and backup both did this, since due to slight timing differences one might read just after the DMA and the other just before. In that case they would diverge.
 
-FT avoids this problem by not copying into guest memory while the primary or backup is executing. FT first copies the network packet or disk block into **a private "bounce buffer" that the primary cannot access** When this first copy completes, the FT hypervisor interrupts the primary so that it is not executing. FT records the point at which it interrupted the primary (as with any interrupt). Then FT copies the bounce buffer into the primary's memory, and after that allows the primary to continue executing. **FT sends the data to the backup on the log channel**. The backup's FT interrupts the backup at the same instruction as the primary was interrupted, copies the data into the backup's memory while the backup is into executing, and then resumes the backup.
+FT avoids this problem by not copying into guest memory while the primary or backup is executing. FT first copies the network packet or disk block into **a private "bounce buffer" that the primary cannot access** When this first copy completes, the FT hypervisor interrupts the primary so that it is not executing. FT records the point at which it interrupted the primary (as with any interrupt). Then FT copies the bounce buffer into the primary's memory, and after that allows the primary to continue executing. FT sends the data to the backup on the log channel. The backup's FT interrupts the backup at the same instruction as the primary was interrupted, copies the data into the backup's memory while the backup is into executing, and then resumes the backup.
 
 The effect is that the network packet or disk block appears at exactly the same time in the primary and backup, so that no matter when they read the memory, both see the same data.
+
 
 Q. what I find most confusing about the paper?
 
