@@ -9,3 +9,9 @@ Maintaining a version number for each key will be useful for implementing locks 
 When you've finished this lab and passed all the tests, you'll have a linearizable key/value service from the point of view of clients calling Clerk.Get and Clerk.Put. That is, if client operations aren't concurrent, each client Clerk.Get and Clerk.Put will observe the modifications to the state implied by the preceding sequence of operations. For concurrent operations, the return values and final state will be the same as if the operations had executed one at a time in some order. Operations are concurrent if they overlap in time: for example, if client X calls Clerk.Put(), and client Y calls Clerk.Put(), and then client X's call returns. An operation must observe the effects of all operations that have completed before the operation starts. See the FAQ on linearizability for more background.
 
 Linearizability is convenient for applications because it's the behavior you'd see from a single server that processes requests one at a time. For example, if one client gets a successful response from the server for an update request, subsequently launched reads from other clients are guaranteed to see the effects of that update. Providing linearizability is relatively easy for a single server.
+
+# A lock layered on client
+
+Here is the diagram to help understand the [lock/lock.go](lock/lock.go) implementation based on the lens of linearizable execution history.
+
+![](assets/a_lock_layered_on_client_example.png)
