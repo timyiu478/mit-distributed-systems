@@ -8,7 +8,7 @@ My completed projects at a glance:
 
 | # | Title | Description | Link | Tags |
 | - | - | - | - | - |
-| 1 | A at-most-once linearisable key-value store | A key/value server for a single machine that ensures that each *Put* operation is executed at-most-once despite network failures and that the operations are linearizable.  | [Here](labs/kvsrv1) | `At-most-once semantics`, `Linearisability`, `KV-Store` |
+| 1 | A at-most-once linearisable key-value store | A key/value server for a single machine that ensures that each *Put* operation is executed at-most-once despite network failures and that the operations are linearizable.  | [Here](labs/src/kvsrv1) | `At-most-once semantics`, `Linearisability`, `KV-Store` |
 
 # Readings
 
