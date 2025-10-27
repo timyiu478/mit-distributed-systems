@@ -19,6 +19,15 @@ import (
 	"6.5840/tester1"
 )
 
+type Command int
+
+type State int
+
+const (
+	FollowerState State iota
+	CandidateState
+	LeaderState
+)
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -31,7 +40,22 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	currentTerm 	int 
+	voteIdFor   	int
+	log 					[]Command
 
+	commitIndex   int
+	lastApplied   int
+
+	nextIndex 		[]int
+	matchIndex 		[]int
+
+	lastHeartbeat		 Duration
+	electionTimeout  Duration
+
+	currentState  State
+
+	votes         []int // votes[peer's indx] = 1/0; 1: vote granted
 }
 
 // return currentTerm and whether this server
@@ -41,6 +65,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	term = rf.currentTerm
+	isleader = currentState == LeaderState
+
 	return term, isleader
 }
 
@@ -105,13 +132,38 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	Term					int
+	CandidateId   int
+	LastLogIndex  int
+	LastLogTerm   int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	Term					int
+	VoteGranted   int
+	peerIdx       int // peer idx in peers list
 }
+
+
+// AppendEntriesArgs RPC arguments structure
+type AppendEntriesArgs struct {
+	Term					int
+	LeaderId			int
+	PrevLogIndex  int
+	PrevLogTerm   int
+	LeaderCommit  int
+	Entries				[]Command
+}
+
+// AppendEntriesArgs RPC reply structure
+type AppendEntriesReply struct {
+	Term					int
+	Success				bool
+}
+
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -150,6 +202,17 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+// send a AppendEntries RPC to a server.
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+// AppendEntries RPC handler
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// update heartbeat
+	rf.heartbeat = time.Now()
+}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -199,6 +262,15 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
+		if rf.currentState != LeaderState && time.Now() > rf.lastHeartbeat + rf.electionTimeout {
+			// transit to candidate state
+			rf.currentState = CandidateState
+			// increament current term
+			rf.term += 1
+			// vote for itself
+
+		}
+
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -224,6 +296,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.currentTerm = 0
+	rf.voteGranted = null
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.electionTimeout = 2 * time.Second
+	rf.currentState = FollowerState
+	rf.leaderCommit = []int{}
+	rf.matchIndex = []int{}
+	rf.votes = []int{}
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

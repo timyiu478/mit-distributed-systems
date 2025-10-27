@@ -133,3 +133,4 @@ Q. Why candidate need to store vote on persistent storage?
 
 * To ensure that the vote is not lost in case of a crash or restart and the candidate never change its mind after voting.
 * Otherwise, a server could vote multiple times (to different server) in the same term after a crash, violating the election safety property of Raft.
+
