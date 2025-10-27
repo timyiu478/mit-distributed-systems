@@ -8,6 +8,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -19,12 +20,15 @@ import (
 	"6.5840/tester1"
 )
 
-type Command int
+type Entry struct {
+	Command int
+	Term    int
+}
 
 type State int
 
 const (
-	FollowerState State iota
+	FollowerState State = iota
 	CandidateState
 	LeaderState
 )
@@ -42,20 +46,21 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm 	int 
 	voteIdFor   	int
-	log 					[]Command
+	log 					[]Entry
 
 	commitIndex   int
 	lastApplied   int
+	lastIndexTerm int
 
 	nextIndex 		[]int
 	matchIndex 		[]int
 
-	lastHeartbeat		 Duration
-	electionTimeout  Duration
+	lastHeartbeat		 time.Time
+	electionTimeout  time.Duration
 
 	currentState  State
 
-	votes         []int // votes[peer's indx] = 1/0; 1: vote granted
+	applyCh 			chan raftapi.ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -66,7 +71,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (3A).
 	term = rf.currentTerm
-	isleader = currentState == LeaderState
+	isleader = rf.currentState == LeaderState
 
 	return term, isleader
 }
@@ -143,8 +148,7 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	// Your data here (3A).
 	Term					int
-	VoteGranted   int
-	peerIdx       int // peer idx in peers list
+	VoteGranted   bool
 }
 
 
@@ -155,7 +159,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex  int
 	PrevLogTerm   int
 	LeaderCommit  int
-	Entries				[]Command
+	Entries				[]Entry
 }
 
 // AppendEntriesArgs RPC reply structure
@@ -168,6 +172,26 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+
+	if rf.currentTerm > args.Term {
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = false
+			return
+	}
+	if rf.currentTerm < args.Term {
+			rf.currentTerm = args.Term
+			rf.currentState = FollowerState
+			rf.voteIdFor = -1
+	}
+	if rf.currentState == FollowerState && rf.voteIdFor == -1 && len(rf.log) - 1 <= args.LastLogIndex { // TODO: fix last log term check
+			rf.voteIdFor = args.CandidateId
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = true
+
+			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d", rf.voteIdFor), "")
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -209,9 +233,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 // AppendEntries RPC handler
+// invoked by a librpc call
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+
 	// update heartbeat
-	rf.heartbeat = time.Now()
+	rf.lastHeartbeat = time.Now()
+
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -262,20 +291,81 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		if rf.currentState != LeaderState && time.Now() > rf.lastHeartbeat + rf.electionTimeout {
+		// rf.mu.Lock()
+
+		if rf.currentState != LeaderState && time.Now().After(rf.lastHeartbeat.Add(rf.electionTimeout)) {
 			// transit to candidate state
 			rf.currentState = CandidateState
 			// increament current term
-			rf.term += 1
+			rf.currentTerm += 1
 			// vote for itself
-
+			rf.voteIdFor = rf.me
+			// reset election timer
+			rf.lastHeartbeat = time.Now()
+			// send RequestVote RPCs to all other servers
+			voteCount := 1
+			args := &RequestVoteArgs{
+				Term: rf.currentTerm, 
+				CandidateId: rf.me,
+				LastLogIndex: len(rf.log) - 1,
+				LastLogTerm: 0, // TODO: fix this
+			}
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me { continue }
+				reply := &RequestVoteReply{}
+				ret := rf.sendRequestVote(i, args, reply)
+				if ret {
+						if reply.VoteGranted { 
+							voteCount += 1 
+						// discover new term
+						} else if reply.Term > rf.currentTerm {
+							// catch up the term
+							rf.currentTerm = reply.Term
+							// transit back to follower state
+							rf.currentState = FollowerState	
+							break
+						}
+				}
+			}
+			// reset voteIdFor
+			rf.voteIdFor = -1
+			// check if get majority votes
+			if rf.currentState == CandidateState && voteCount > (len(rf.peers) / 2) {
+				// transit to leader state	
+				rf.currentState = LeaderState
+				tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.currentTerm), "")
+			}
 		}
 
+		// rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) heartbeat() {
+	for rf.killed() == false {
+		// pause for a random amount of time between 100 and 200
+		// milliseconds.
+		ms := 100 + (rand.Int63() % 100)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		// rf.mu.Lock()
+
+		if rf.currentState != LeaderState { continue }
+
+		// send heartbeat if it is leader
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me { continue }
+			args := &AppendEntriesArgs{}
+			reply := &AppendEntriesReply{}
+			rf.sendAppendEntries(i, args, reply)
+		}
+
+		// rf.mu.Unlock()
 	}
 }
 
@@ -297,14 +387,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.currentTerm = 0
-	rf.voteGranted = null
+	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 2 * time.Second
+	rf.electionTimeout = 3 * time.Second
+	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
-	rf.leaderCommit = []int{}
+	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
-	rf.votes = []int{}
+	rf.log = []Entry{}
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -312,6 +404,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	// start heartbeat goroutine to start hear beating
+	go rf.heartbeat()
 
 	return rf
 }
