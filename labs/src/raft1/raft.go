@@ -176,21 +176,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// defer rf.mu.Unlock()
 
 	if rf.currentTerm > args.Term {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = false
-			return
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	} else if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		rf.voteIdFor = -1
+		rf.currentState = FollowerState
 	}
-	if rf.currentTerm < args.Term {
-			rf.currentTerm = args.Term
-			rf.currentState = FollowerState
-			rf.voteIdFor = -1
-	}
-	if rf.currentState == FollowerState && rf.voteIdFor == -1 && len(rf.log) - 1 <= args.LastLogIndex { // TODO: fix last log term check
-			rf.voteIdFor = args.CandidateId
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = true
 
-			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d", rf.voteIdFor), "")
+	if rf.currentState == FollowerState && rf.voteIdFor == -1 && len(rf.log) - 1 <= args.LastLogIndex { // TODO: fix last log term check
+		rf.voteIdFor = args.CandidateId
+
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.voteIdFor, rf.currentTerm), "")
 	}
 }
 
@@ -241,6 +242,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// update heartbeat
 	rf.lastHeartbeat = time.Now()
 
+	// transit to follower state if discover current leader or higher term
+	if rf.currentState != CandidateState && rf.currentTerm <= args.Term {
+		rf.currentTerm = args.Term
+		rf.voteIdFor = -1
+		rf.currentState = FollowerState
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -287,85 +294,110 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		// rf.mu.Lock()
+		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(500 + rand.Int63() % 500) * time.Millisecond)) {
+			// pause
+			time.Sleep(time.Duration(50 + rand.Int63() % 100) * time.Millisecond)
+		}
 
-		if rf.currentState != LeaderState && time.Now().After(rf.lastHeartbeat.Add(rf.electionTimeout)) {
-			// transit to candidate state
-			rf.currentState = CandidateState
-			// increament current term
-			rf.currentTerm += 1
-			// vote for itself
-			rf.voteIdFor = rf.me
-			// reset election timer
-			rf.lastHeartbeat = time.Now()
-			// send RequestVote RPCs to all other servers
-			voteCount := 1
-			args := &RequestVoteArgs{
-				Term: rf.currentTerm, 
-				CandidateId: rf.me,
-				LastLogIndex: len(rf.log) - 1,
-				LastLogTerm: 0, // TODO: fix this
-			}
-			for i := 0; i < len(rf.peers); i++ {
-				if i == rf.me { continue }
-				reply := &RequestVoteReply{}
-				ret := rf.sendRequestVote(i, args, reply)
-				if ret {
-						if reply.VoteGranted { 
-							voteCount += 1 
-						// discover new term
-						} else if reply.Term > rf.currentTerm {
-							// catch up the term
-							rf.currentTerm = reply.Term
-							// transit back to follower state
-							rf.currentState = FollowerState	
-							break
-						}
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election in term %d", rf.currentTerm), "")
+
+
+		rf.mu.Lock()
+		// transit to candidate state
+		rf.currentState = CandidateState
+		// increament current term
+		rf.currentTerm += 1
+		// vote for itself
+		rf.voteIdFor = rf.me
+		// reset election timer
+		rf.lastHeartbeat = time.Now()
+		rf.mu.Unlock()
+		
+
+		// send RequestVote RPCs to all other servers
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		replys := make([]*RequestVoteReply, len(rf.peers) - 1)
+		rets := make([]bool, len(rf.peers) - 1)
+
+		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
+			if i == rf.me { continue }
+			wg.Go(func(){
+
+				args := &RequestVoteArgs{
+					Term: rf.currentTerm,
+					CandidateId: rf.me,
+					LastLogIndex: len(rf.log) - 1,
+					LastLogTerm: 0, // TODO: fix this
 				}
-			}
-			// reset voteIdFor
-			rf.voteIdFor = -1
-			// check if get majority votes
-			if rf.currentState == CandidateState && voteCount > (len(rf.peers) / 2) {
-				// transit to leader state	
-				rf.currentState = LeaderState
-				tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.currentTerm), "")
+				reply := new(RequestVoteReply)
+				ret := rf.sendRequestVote(i, args, reply)
+
+				mu.Lock()
+				defer mu.Unlock()
+				replys = append(replys, reply)
+				rets = append(rets, ret)
+			})
+		}
+		wg.Wait()
+
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sent votes in term %d", rf.currentTerm), "")
+
+		voteCount := 1
+
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		for i := 0; i < len(rets) && rf.killed() == false; i++ {
+			if i == rf.me { continue }
+
+			if rets[i] {
+				if replys[i].VoteGranted { 
+					voteCount += 1 
+				// discover new term
+				} else if replys[i].Term > rf.currentTerm {
+					// catch up the term
+					rf.currentTerm = replys[i].Term
+					// transit back to follower state
+					rf.voteIdFor = -1
+					rf.currentState = FollowerState
+					break
+				}
 			}
 		}
 
-		// rf.mu.Unlock()
+		// check if get majority votes
+		if rf.currentState == CandidateState && voteCount > (len(rf.peers) / 2) {
+			// transit to leader state	
+			rf.voteIdFor = -1
+			rf.currentState = LeaderState
+			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.currentTerm), "")
+		}
 
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 100 and 200
+		// pause for a random amount of time between 150 and 250
 		// milliseconds.
-		ms := 100 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		// rf.mu.Lock()
 
 		if rf.currentState != LeaderState { continue }
 
 		// send heartbeat if it is leader
-		for i := 0; i < len(rf.peers); i++ {
+		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
 			if i == rf.me { continue }
 			args := &AppendEntriesArgs{}
 			reply := &AppendEntriesReply{}
 			rf.sendAppendEntries(i, args, reply)
 		}
-
-		// rf.mu.Unlock()
 	}
 }
 
@@ -390,7 +422,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 3 * time.Second
+	rf.electionTimeout = 1100 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = []int{}

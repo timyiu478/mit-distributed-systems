@@ -60,10 +60,13 @@ See Figure 7 in the paper for illustration.
 
 Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
 
+### Election Timeout Cosiderations
+
+* Broadcast Time <= Election Timeout <= MTBF
+
 ### What are the details that not covered in the Figure 2 of the paper?
 
-todo
-
+* tips on how to implement it in a maintainable way
 
 ## Questions
 
