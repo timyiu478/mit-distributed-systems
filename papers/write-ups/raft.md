@@ -70,7 +70,7 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
 
 * Tips on how to implement it in a maintainable way
     * How to synchronize RPC handlers, leader election algo, and heart beat correctly for changing the server state such as current term and voteIdFor?
-* Should a server start leader election when it first starts to run?
+* We may need to store more volatile state
 
 ## Questions
 

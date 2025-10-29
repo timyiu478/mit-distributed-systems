@@ -203,7 +203,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 
-	if rf.currentState == FollowerState && rf.voteIdFor == -1 && len(rf.log) - 1 <= args.LastLogIndex { // TODO: fix last log term check
+	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) { // TODO: fix last log term check
 		rf.voteIdFor = args.CandidateId
 
 		reply.VoteGranted = true
@@ -340,11 +340,11 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(50 + rand.Int63() % 150) * time.Millisecond)
+		time.Sleep(time.Duration(50 + rand.Int63() % 100) * time.Millisecond)
 
 		rf.mu.Lock()
 
-		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 200) * time.Millisecond)) || rf.voteIdFor != -1 {
+		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 300) * time.Millisecond)) {
 			rf.mu.Unlock()
 			continue
 		}
@@ -361,21 +361,16 @@ func (rf *Raft) ticker() {
 		rf.voteCount = 1 
 		// reset election timer
 		rf.lastHeartbeat = time.Now()
-		// copy data
-		me := rf.me
-		currentTerm := rf.currentTerm
-		lenOfLog := len(rf.log)
 
-		
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.currentTerm), "")
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
-			if i == me { continue }
+			if i == rf.me { continue }
 			go func(){
 				args := &RequestVoteArgs{
-					Term: currentTerm,
-					CandidateId: me,
-					LastLogIndex: lenOfLog - 1,
+					Term: rf.currentTerm,
+					CandidateId: rf.me,
+					LastLogIndex: len(rf.log) - 1,
 					LastLogTerm: 0, // TODO: fix this
 				}
 				reply := new(RequestVoteReply)
@@ -430,7 +425,7 @@ func (rf *Raft) RequestVoteReplyHandler() {
 			break
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.currentTerm), "")
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.currentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
 
 		if reply.VoteGranted { 
 			rf.voteCount += 1 
@@ -466,7 +461,7 @@ func (rf *Raft) AppendEntriesReplyHandler() {
 			break
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.currentTerm), "")
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.currentTerm), fmt.Sprintf("reply term: %d", reply.Term))
 
 		// transit to follower if discover newer term
 		if reply.Term > rf.currentTerm && rf.killed() == false {
@@ -501,7 +496,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 1000 * time.Millisecond
+	rf.electionTimeout = 1100 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = []int{}
@@ -510,7 +505,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	
 	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers))
-	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers))
+	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
