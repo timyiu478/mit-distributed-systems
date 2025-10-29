@@ -63,10 +63,14 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
 ### Election Timeout Cosiderations
 
 * Broadcast Time <= Election Timeout <= MTBF
+* If *Election Timeout < Broadcast Time*, 
+* If *Election Timeout > MTBF*, 
 
 ### What are the details that not covered in the Figure 2 of the paper?
 
-* tips on how to implement it in a maintainable way
+* Tips on how to implement it in a maintainable way
+    * How to synchronize RPC handlers, leader election algo, and heart beat correctly for changing the server state such as current term and voteIdFor?
+* Should a server start leader election when it first starts to run?
 
 ## Questions
 

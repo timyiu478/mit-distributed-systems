@@ -172,23 +172,32 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	if rf.currentTerm > args.Term {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
+	tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved RV RPC in term %d", rf.currentTerm), "")
+
+	// default reply
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+
+	// deny request from older term
+	if rf.currentTerm > args.Term { 
 		return
-	} else if rf.currentTerm < args.Term {
+	}
+
+	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
 		rf.voteIdFor = -1
 		rf.currentState = FollowerState
+
+		reply.Term = args.Term
 	}
+
 
 	if rf.currentState == FollowerState && rf.voteIdFor == -1 && len(rf.log) - 1 <= args.LastLogIndex { // TODO: fix last log term check
 		rf.voteIdFor = args.CandidateId
 
-		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.voteIdFor, rf.currentTerm), "")
@@ -236,15 +245,37 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // AppendEntries RPC handler
 // invoked by a librpc call
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved AE RPC in term %d", rf.currentTerm), "")
+
+	// default reply
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
+	// deny request from older term
+	if rf.currentTerm > args.Term {
+		reply.Success = false
+		return
+	}
 
 	// update heartbeat
 	rf.lastHeartbeat = time.Now()
 
-	// transit to follower state if discover current leader or higher term
-	if rf.currentState != CandidateState && rf.currentTerm <= args.Term {
+	// transit to follower state if discover higher term
+	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
+		rf.voteIdFor = -1
+		rf.currentState = FollowerState
+
+		reply.Term = args.Term
+
+		return
+	}
+
+	// transit to follower state if discover leader in this term
+	if rf.currentState == CandidateState && rf.currentTerm == args.Term {
 		rf.voteIdFor = -1
 		rf.currentState = FollowerState
 	}
@@ -296,16 +327,16 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-
-		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(500 + rand.Int63() % 500) * time.Millisecond)) {
-			// pause
-			time.Sleep(time.Duration(50 + rand.Int63() % 100) * time.Millisecond)
+		rf.mu.Lock()
+		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 1000) * time.Millisecond)) || rf.voteIdFor != -1 {
+			rf.mu.Unlock()
+			time.Sleep(time.Duration(100 + rand.Int63() % 200) * time.Millisecond)
+			continue
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election in term %d", rf.currentTerm), "")
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election for term %d", rf.currentTerm + 1), "")
 
 
-		rf.mu.Lock()
 		// transit to candidate state
 		rf.currentState = CandidateState
 		// increament current term
@@ -314,60 +345,64 @@ func (rf *Raft) ticker() {
 		rf.voteIdFor = rf.me
 		// reset election timer
 		rf.lastHeartbeat = time.Now()
-		rf.mu.Unlock()
-		
+		// copy data
+		me := rf.me
+		currentTerm := rf.currentTerm
+		lenOfLog := len(rf.log)
 
-		// send RequestVote RPCs to all other servers
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.currentTerm), "")
 
 		var wg sync.WaitGroup
-		var mu sync.Mutex
 
-		replys := make([]*RequestVoteReply, len(rf.peers) - 1)
-		rets := make([]bool, len(rf.peers) - 1)
+		replyCh := make(chan *RequestVoteReply, len(rf.peers) - 1)
 
-		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
-			if i == rf.me { continue }
+		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
+			if i == me { continue }
 			wg.Go(func(){
-
 				args := &RequestVoteArgs{
-					Term: rf.currentTerm,
-					CandidateId: rf.me,
-					LastLogIndex: len(rf.log) - 1,
+					Term: currentTerm,
+					CandidateId: me,
+					LastLogIndex: lenOfLog - 1,
 					LastLogTerm: 0, // TODO: fix this
 				}
 				reply := new(RequestVoteReply)
 				ret := rf.sendRequestVote(i, args, reply)
 
-				mu.Lock()
-				defer mu.Unlock()
-				replys = append(replys, reply)
-				rets = append(rets, ret)
+				if ret { replyCh <- reply }
 			})
 		}
+
+		// unlock the mutex imm before waiting threads
+		rf.mu.Unlock()
+
+
 		wg.Wait()
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sent votes in term %d", rf.currentTerm), "")
-
 		voteCount := 1
+
+		// Sleep to allow to get the mutex and handle RPCs
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
-		for i := 0; i < len(rets) && rf.killed() == false; i++ {
-			if i == rf.me { continue }
+		// RPC handlers may changed the state
+		if rf.currentState != CandidateState { continue }
 
-			if rets[i] {
-				if replys[i].VoteGranted { 
-					voteCount += 1 
-				// discover new term
-				} else if replys[i].Term > rf.currentTerm {
-					// catch up the term
-					rf.currentTerm = replys[i].Term
-					// transit back to follower state
-					rf.voteIdFor = -1
-					rf.currentState = FollowerState
-					break
-				}
+		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Handling %d number of votes in term %d", len(replyCh), rf.currentTerm), "")
+
+		for i := 0; i < len(replyCh) && rf.killed() == false; i++ {
+			reply := <- replyCh
+			if reply.VoteGranted { 
+				voteCount += 1 
+			// discover new term
+			} else if reply.Term > rf.currentTerm {
+				// catch up the term
+				rf.currentTerm = reply.Term
+				// transit back to follower state
+				rf.voteIdFor = -1
+				rf.currentState = FollowerState
+				break
 			}
 		}
 
@@ -384,19 +419,41 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 250
+		// pause for a random amount of time between 300 and 400
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 100)
+		ms := 300 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 
 		if rf.currentState != LeaderState { continue }
 
-		// send heartbeat if it is leader
+		// broadcast heartbeat if it is leader
+		var wg sync.WaitGroup
+
+		replyCh := make(chan *AppendEntriesReply, len(rf.peers) - 1)
+
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
 			if i == rf.me { continue }
-			args := &AppendEntriesArgs{}
-			reply := &AppendEntriesReply{}
-			rf.sendAppendEntries(i, args, reply)
+			wg.Go(func(){
+				args := &AppendEntriesArgs{
+					Term: rf.currentTerm,
+					LeaderId: rf.me,
+				}
+				reply := new(AppendEntriesReply)
+				ret := rf.sendAppendEntries(i, args, reply)
+				if ret { replyCh <- reply }
+			})
+		}
+
+		for reply := range replyCh {
+			// trainsit to follower if discover newer term
+			if reply.Term > rf.currentTerm && rf.killed() == false {
+				rf.currentTerm = reply.Term
+				rf.voteIdFor = -1
+				rf.currentState = FollowerState
+			}
 		}
 	}
 }
@@ -422,7 +479,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 1100 * time.Millisecond
+	rf.electionTimeout = 2500 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = []int{}
