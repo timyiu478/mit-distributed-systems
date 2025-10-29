@@ -74,6 +74,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	term = rf.currentTerm
 	isleader = rf.currentState == LeaderState
 
@@ -337,12 +340,12 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(50 + rand.Int63() % 100) * time.Millisecond)
+		time.Sleep(time.Duration(50 + rand.Int63() % 150) * time.Millisecond)
 
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 
-		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 100) * time.Millisecond)) || rf.voteIdFor != -1 {
+		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 200) * time.Millisecond)) || rf.voteIdFor != -1 {
+			rf.mu.Unlock()
 			continue
 		}
 
@@ -394,9 +397,11 @@ func (rf *Raft) heartbeat() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 
-		if rf.currentState != LeaderState { continue }
+		if rf.currentState != LeaderState { 
+			rf.mu.Unlock()
+			continue 
+		}
 
 		// broadcast heartbeat if it is leader
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
@@ -411,15 +416,19 @@ func (rf *Raft) heartbeat() {
 				if ret { rf.appendEntriesReplyCh <- reply }
 			}()
 		}
+
+		rf.mu.Unlock()
 	}
 }
 
 func (rf *Raft) RequestVoteReplyHandler() {
 	for reply := range rf.requestVoteReplyCh {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 
-		if rf.killed() { break }
+		if rf.killed() {
+			rf.mu.Unlock()
+			break
+		}
 
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.currentTerm), "")
 
@@ -443,15 +452,19 @@ func (rf *Raft) RequestVoteReplyHandler() {
 			rf.currentState = LeaderState
 			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.currentTerm), "")
 		}
+
+		rf.mu.Unlock()
 	}
 }
 
 func (rf *Raft) AppendEntriesReplyHandler() {
 	for reply := range rf.appendEntriesReplyCh {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
 
-		if rf.killed() { break }
+		if rf.killed() {
+			rf.mu.Unlock()
+			break
+		}
 
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.currentTerm), "")
 
@@ -462,6 +475,8 @@ func (rf *Raft) AppendEntriesReplyHandler() {
 			rf.voteCount = 0
 			rf.currentState = FollowerState
 		}
+
+		rf.mu.Unlock()
 	}
 }
 
@@ -486,7 +501,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 700 * time.Millisecond
+	rf.electionTimeout = 1000 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = []int{}
