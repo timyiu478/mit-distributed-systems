@@ -1,5 +1,4 @@
+# Commit Tags
 
-# Progress
+1. [leader election](https://github.com/timyiu478/mit-distributed-systems-2025/tree/lab-3a-raft-leader-election/labs/src/raft1)
 
-- leader election
-- 
