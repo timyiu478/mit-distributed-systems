@@ -1,8 +1,8 @@
 ---
 title: "In Search of an Understandable Consensus Algorithm (Extended Version)"
 description: "WIP"
-tags: ["Consensus", "State Machine Replication", "Raft", "Leader Election"]
-reference: 
+tags: ["Consensus", "Replicated State Machine", "Raft", "Leader Election", "Log Compaction"]
+reference: https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf
 ---
 
 ## Key Contributions
@@ -62,15 +62,23 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
 
 ### Election Timeout Cosiderations
 
-* Broadcast Time <= Election Timeout <= MTBF
-* If *Election Timeout < Broadcast Time*, 
-* If *Election Timeout > MTBF*, 
+* *Broadcast Time <= Election Timeout <= MTBF*
+* *Broadcast Time* is the average time of sending RPCs to all servers in parallel. If *Election Timeout < Broadcast Time*, there is NO time for servers sending the reply back to the candidate. So the leader election algorithm will run forever without making any progress.
+* *MTBF* is the mean time between a failure of a single server. If *Election Timeout > MTBF*, failures occur during election.
+
 
 ### What are the details that not covered in the Figure 2 of the paper?
 
 * Tips on how to implement it in a maintainable way
     * How to synchronize RPC handlers, leader election algo, and heart beat correctly for changing the server state such as current term and voteIdFor?
 * We may need to store more volatile state
+* When to reset election timeout: 
+    * receive heart beat
+    * become a candidate
+    * grant a vote to a candidate
+        * the follower know someone is handling the leader failure
+        * this is especially important in unreliable networks where it is likely that followers have different logs; in those situations, you will often end up with only a small number of servers that a majority of servers are willing to vote for. If you reset the election timer whenever someone asks you to vote for them, this makes it equally likely for a server with an outdated log to step forward as for a server with a longer log.
+        * the servers with the more up-to-date logs won’t be interrupted by outdated servers’ elections, and so are more likely to complete the election and become the leader
 
 ## Questions
 
@@ -141,3 +149,12 @@ Q. Why candidate need to store vote on persistent storage?
 * To ensure that the vote is not lost in case of a crash or restart and the candidate never change its mind after voting.
 * Otherwise, a server could vote multiple times (to different server) in the same term after a crash, violating the election safety property of Raft.
 
+Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
+
+
+
+---
+
+## TODO
+
+read section 6

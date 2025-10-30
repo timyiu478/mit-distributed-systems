@@ -193,6 +193,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
+	// adopt the newer term before handle the RPC
 	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
 		rf.voteIdFor = -1
