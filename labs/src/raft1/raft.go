@@ -56,8 +56,8 @@ type Raft struct {
 
 	log 					[]Entry
 
-	lastHeartbeat		 time.Time
-	electionTimeout  time.Duration
+	lastHeartbeat		 						time.Time
+	electionTimeoutLowerBound  	time.Duration
 
 	currentState  State
 
@@ -204,7 +204,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 
 	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) { // TODO: fix last log term check
+		// vote for first valid candidate 
 		rf.voteIdFor = args.CandidateId
+		// reset election timer
+		rf.lastHeartbeat = time.Now()
 
 		reply.VoteGranted = true
 
@@ -344,7 +347,8 @@ func (rf *Raft) ticker() {
 
 		rf.mu.Lock()
 
-		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(rf.electionTimeout + time.Duration(rand.Int63() % 300) * time.Millisecond)) {
+		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 300) * time.Millisecond
+		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(electionTimeout)) {
 			rf.mu.Unlock()
 			continue
 		}
@@ -496,7 +500,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeout = 1100 * time.Millisecond
+	rf.electionTimeoutLowerBound = 1500 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = []int{}
