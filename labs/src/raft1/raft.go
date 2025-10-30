@@ -21,7 +21,7 @@ import (
 )
 
 type Entry struct {
-	Command int
+	Command interface{}
 	Term    int
 }
 
@@ -50,11 +50,13 @@ type Raft struct {
 	commitIndex   int
 	lastApplied   int
 	lastIndexTerm int
+	lastLogIndex 	int
+	lastLogTerm 	int
 
 	nextIndex 		[]int
 	matchIndex 		[]int
 
-	log 					[]Entry
+	log 					[]Entry // 0-indexed
 
 	lastHeartbeat		 						time.Time
 	electionTimeoutLowerBound  	time.Duration
@@ -203,8 +205,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = args.Term
 	}
 
-
-	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) { // TODO: fix last log term check
+	// If votedFor is null or candidateId, and candidate’s log is at
+	// least as up-to-date as receiver’s log, grant vote
+	lastLogIndex := len(rf.log) - 1
+	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) && (lastLogIndex < 0 || lastLogIndex <= args.LastLogIndex && rf.log[lastLogIndex].Term <= args.LastLogTerm) {
 		// vote for first valid candidate 
 		rf.voteIdFor = args.CandidateId
 		// reset election timer
@@ -313,6 +317,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.currentState != LeaderState {
+		return index, term, false
+	}
+
+	index = rf.lastLogIndex + 1
+	term 	= rf.currentTerm
 
 
 	return index, term, isLeader
@@ -375,8 +388,8 @@ func (rf *Raft) ticker() {
 				args := &RequestVoteArgs{
 					Term: rf.currentTerm,
 					CandidateId: rf.me,
-					LastLogIndex: len(rf.log) - 1,
-					LastLogTerm: 0, // TODO: fix this
+					LastLogIndex: rf.lastLogIndex,
+					LastLogTerm: rf.lastLogTerm,
 				}
 				reply := new(RequestVoteReply)
 				ret := rf.sendRequestVote(i, args, reply)
@@ -498,9 +511,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.currentTerm = 0
-	rf.voteIdFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.voteIdFor = -1
+	rf.lastLogIndex = -1
+	rf.lastLogTerm = -1
 	rf.electionTimeoutLowerBound = 1500 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState

@@ -82,7 +82,6 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
 
 ## Questions
 
-
 Q. What is configuration change in Raft? How does the membership change mechanism in Raft ensure that the cluster continues to operate normally during configuration changes?
 
 * The configuration in Raft means the set of servers that are participanting in the consensus algorithm.
@@ -150,6 +149,14 @@ Q. Why candidate need to store vote on persistent storage?
 * Otherwise, a server could vote multiple times (to different server) in the same term after a crash, violating the election safety property of Raft.
 
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
+
+Q. How client finds the leader?
+
+* When a client first starts up, it connects to a randomlychosen server.
+* If the client’s first choice is not the leader, that server will reject the client’s request and supply information about the most recent leader it has heard from (AppendEntries requests include the network address of the leader).
+* If the leader crashes, client requests will timeout; clients then try again with randomly-chosen servers.
+
+Q. How Raft supports linearizable semantics?
 
 
 
