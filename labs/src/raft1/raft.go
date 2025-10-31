@@ -292,7 +292,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		reply.Term = args.Term
 	} else if rf.currentState == CandidateState && rf.currentTerm == args.Term { // transit to follower state if discover leader in this term
-		rf.voteIdFor = -1
+		// DO NOT reset the voteIdFor
+		// if a server clears voteIdFor while staying in the same term,
+		// it can later grant a second vote in the same term to another candidate
+		rf.voteIdFor = args.LeaderId
 		rf.voteCount = 0
 		rf.currentState = FollowerState
 	}
@@ -388,7 +391,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(100 + rand.Int63() % 100) * time.Millisecond)
+		time.Sleep(time.Duration(150) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -600,13 +603,14 @@ func (rf *Raft) appendEntriesReqHandler() {
 			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.currentTerm), "")
 
 			entries := rf.log[rf.nextIndex[i]:]
+			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
 
 			go func(term int, leaderId int, peer int, commitIndex int){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
-					PrevLogIndex: rf.nextIndex[peer] - 1,
+					PrevLogIndex: prevLogIndex,
 					PrevLogTerm: prevLogTerm,
 					LeaderCommit: commitIndex,
 					Entries: entries,
