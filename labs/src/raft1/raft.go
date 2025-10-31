@@ -209,7 +209,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote
 	lastLogIndex := len(rf.log) - 1
-	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) && (lastLogIndex < 0 || lastLogIndex <= args.LastLogIndex && rf.log[lastLogIndex].Term <= args.LastLogTerm) {
+	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) && (lastLogIndex <= args.LastLogIndex && rf.log[lastLogIndex].Term <= args.LastLogTerm) {
 		// vote for first valid candidate 
 		rf.voteIdFor = args.CandidateId
 		// reset election timer
@@ -299,7 +299,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	lastLogIndex := len(rf.log) - 1
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	if args.PrevLogIndex > lastLogIndex || lastLogIndex > -1 && args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+	if args.PrevLogIndex > lastLogIndex || args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		return
 	}
 
@@ -413,10 +413,7 @@ func (rf *Raft) ticker() {
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.currentTerm), "")
 
 		lastLogIndex := len(rf.log) - 1
-		lastLogTerm := -1
-		if lastLogIndex > -1 {
-		 lastLogTerm = rf.log[lastLogIndex].Term
-	 	}
+		lastLogTerm := rf.log[lastLogIndex].Term
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
@@ -453,13 +450,20 @@ func (rf *Raft) heartbeat() {
 			continue 
 		}
 
+
 		// broadcast heartbeat if it is leader
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
 			if i == rf.me { continue }
+
+			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
+
 			go func(){
 				args := &AppendEntriesArgs{
 					Term: rf.currentTerm,
 					LeaderId: rf.me,
+					PrevLogIndex: rf.nextIndex[i] - 1,
+					PrevLogTerm: prevLogTerm,
+					LeaderCommit: rf.commitIndex,
 				}
 				reply := new(AppendEntriesReply)
 				ret := rf.sendAppendEntries(i, args, reply)
@@ -526,6 +530,11 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			rf.currentState = FollowerState
 		}
 
+		if rf.currentState != LeaderState {
+			rf.mu.Unlock()
+			continue
+		}
+
 		if reply.Success {
 			// update nextIndex and matchIndex for follower
 			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
@@ -541,12 +550,13 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		index := slices.Max(rf.matchIndex)
 		for ; index > rf.commitIndex && rf.killed() == false; index-- {
 			count := 0
-			for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
-				if rf.matchIndex[i] > index {
+			for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
+				if rf.matchIndex[i] >= index {
 					count += 1
 				}
 			}
 			if count > len(rf.peers) / 2 && rf.log[index].Term == rf.currentTerm {
+				tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.currentTerm, count), "")
 				rf.commitIndex = index
 				break
 			}
@@ -556,11 +566,12 @@ func (rf *Raft) appendEntriesReplyHandler() {
 	}
 }
 
+// FIX: no AE req sent
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 200 and 300
+		// pause for a random amount of time between 300 and 400
 		// milliseconds.
-		ms := 200 + (rand.Int63() % 100)
+		ms := 300 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -578,8 +589,8 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.currentTerm), "")
 
-			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
 			entries := rf.log[rf.nextIndex[i]:]
+			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
 
 			go func(){
 				args := &AppendEntriesArgs{
@@ -642,10 +653,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.currentTerm = 0
-	rf.commitIndex = -1
-	rf.lastApplied = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.voteIdFor = -1
-	rf.electionTimeoutLowerBound = 1800 * time.Millisecond
+	rf.electionTimeoutLowerBound = 1300 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
@@ -655,9 +666,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	// initialize nextIndex and matchIndex
 	for i := 0; i < len(peers); i++ {
-		rf.nextIndex[i] = 0
-		rf.matchIndex[i] = -1
+		rf.nextIndex[i] = 1
+		rf.matchIndex[i] = 0
 	}
+
+	// add dummy entry as the first entry of the log
+	rf.log = append(rf.log, Entry{Term: 0})
 
 	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 3 * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
@@ -677,6 +691,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start commit handlers
 	go rf.committedLogHandler()
+
+	// start appendEntries request handler
+	go rf.appendEntriesReqHandler()
 
 	return rf
 }

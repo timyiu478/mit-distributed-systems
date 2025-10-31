@@ -79,6 +79,8 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
         * the follower know someone is handling the leader failure
         * this is especially important in unreliable networks where it is likely that followers have different logs; in those situations, you will often end up with only a small number of servers that a majority of servers are willing to vote for. If you reset the election timer whenever someone asks you to vote for them, this makes it equally likely for a server with an outdated log to step forward as for a server with a longer log.
         * the servers with the more up-to-date logs won’t be interrupted by outdated servers’ elections, and so are more likely to complete the election and become the leader
+* The leader needs to update *nextIndex[]* and *matchIndex[]* if the appendEntriesRPC succeed. But it does not tell what are the values should them update to.
+* When handling AppendEntries request, should the follower/candidate update the heartbeat and transit to follower state if its'log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm?
 
 ## Questions
 
@@ -147,6 +149,10 @@ Q. Why candidate need to store vote on persistent storage?
 
 * To ensure that the vote is not lost in case of a crash or restart and the candidate never change its mind after voting.
 * Otherwise, a server could vote multiple times (to different server) in the same term after a crash, violating the election safety property of Raft.
+
+Q. Why the leader need both *nextIndex[]* and *matchIndex[]*?
+
+
 
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
 
