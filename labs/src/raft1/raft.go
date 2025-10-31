@@ -208,8 +208,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote
+	// See the section 5.4.1 of the paper for the definition of "up-to-date"
 	lastLogIndex := len(rf.log) - 1
-	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) && (lastLogIndex <= args.LastLogIndex && rf.log[lastLogIndex].Term <= args.LastLogTerm) {
+	if (rf.voteIdFor == -1 || rf.voteIdFor == args.CandidateId) && (lastLogIndex <= args.LastLogIndex && rf.log[lastLogIndex].Term == args.LastLogTerm || rf.log[lastLogIndex].Term < args.LastLogTerm) {
 		// vote for first valid candidate 
 		rf.voteIdFor = args.CandidateId
 		// reset election timer
@@ -387,7 +388,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(50 + rand.Int63() % 100) * time.Millisecond)
+		time.Sleep(time.Duration(100 + rand.Int63() % 100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -417,18 +418,19 @@ func (rf *Raft) ticker() {
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
-			go func(){
+			go func(term int, candId int, peer int){
 				args := &RequestVoteArgs{
-					Term: rf.currentTerm,
-					CandidateId: rf.me,
+					Term: term,
+					CandidateId: candId,
 					LastLogIndex: lastLogIndex,
 					LastLogTerm: lastLogTerm,
 				}
 				reply := new(RequestVoteReply)
-				ret := rf.sendRequestVote(i, args, reply)
+				ret := rf.sendRequestVote(peer, args, reply)
 
 				if ret { rf.requestVoteReplyCh <- reply }
-			}()
+			}(rf.currentTerm, rf.me, i)
+
 		}
 
 		rf.mu.Unlock()
@@ -437,9 +439,9 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 250
+		// pause for a random amount of time between 400 and 500
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 100)
+		ms := 400 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -457,18 +459,19 @@ func (rf *Raft) heartbeat() {
 
 			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
 
-			go func(){
+			go func(term int, leaderId int, peer int, commitIndex int){
 				args := &AppendEntriesArgs{
-					Term: rf.currentTerm,
-					LeaderId: rf.me,
+					Term: term,
+					LeaderId: leaderId,
 					PrevLogIndex: rf.nextIndex[i] - 1,
 					PrevLogTerm: prevLogTerm,
-					LeaderCommit: rf.commitIndex,
+					LeaderCommit: commitIndex,
 				}
 				reply := new(AppendEntriesReply)
-				ret := rf.sendAppendEntries(i, args, reply)
+				ret := rf.sendAppendEntries(peer, args, reply)
 				if ret { rf.appendEntriesReplyCh <- reply }
-			}()
+			}(rf.currentTerm, rf.me, i, rf.commitIndex)
+			
 		}
 
 		rf.mu.Unlock()
@@ -500,9 +503,16 @@ func (rf *Raft) requestVoteReplyHandler() {
 		}
 		// check if get majority votes
 		if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
-			// transit to leader state	
 			rf.voteIdFor = -1
 			rf.voteCount = 0
+			for i := 0; i < len(rf.peers); i++ {
+				rf.nextIndex[i] = 1
+				if i == rf.me {
+					rf.nextIndex[i] = len(rf.log)
+				}
+				rf.matchIndex[i] = 0
+			}
+			// transit to leader state	
 			rf.currentState = LeaderState
 			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.currentTerm), "")
 		}
@@ -569,9 +579,9 @@ func (rf *Raft) appendEntriesReplyHandler() {
 // FIX: no AE req sent
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 300 and 400
+		// pause for a random amount of time between 400 and 500
 		// milliseconds.
-		ms := 300 + (rand.Int63() % 100)
+		ms := 400 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -592,19 +602,20 @@ func (rf *Raft) appendEntriesReqHandler() {
 			entries := rf.log[rf.nextIndex[i]:]
 			prevLogTerm := rf.log[rf.nextIndex[i] - 1].Term
 
-			go func(){
+			go func(term int, leaderId int, peer int, commitIndex int){
 				args := &AppendEntriesArgs{
-					Term: rf.currentTerm,
-					LeaderId: rf.me,
-					PrevLogIndex: rf.nextIndex[i] - 1,
+					Term: term,
+					LeaderId: leaderId,
+					PrevLogIndex: rf.nextIndex[peer] - 1,
 					PrevLogTerm: prevLogTerm,
-					LeaderCommit: rf.commitIndex,
+					LeaderCommit: commitIndex,
 					Entries: entries,
 				}
 				reply := new(AppendEntriesReply)
-				ret := rf.sendAppendEntries(i, args, reply)
+				ret := rf.sendAppendEntries(peer, args, reply)
 				if ret { rf.appendEntriesReplyCh <- reply }
-			}()
+			}(rf.currentTerm, rf.me, i, rf.commitIndex)
+
 		}
 		
 		rf.mu.Unlock()
@@ -613,9 +624,9 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 250
+		// pause for a random amount of time between 250 and 350
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 100)
+		ms := 250 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -656,7 +667,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.voteIdFor = -1
-	rf.electionTimeoutLowerBound = 1300 * time.Millisecond
+	rf.electionTimeoutLowerBound = 1500 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
@@ -673,7 +684,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// add dummy entry as the first entry of the log
 	rf.log = append(rf.log, Entry{Term: 0})
 
-	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 3 * len(rf.peers))
+	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers) * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
 
 	// initialize from state persisted before a crash
