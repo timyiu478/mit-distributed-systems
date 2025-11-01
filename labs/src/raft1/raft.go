@@ -196,6 +196,9 @@ type AppendEntriesReply struct {
 	PeerId 				int
 	PrevLogIndex  int
 	EntriesLength int
+	XTerm     		int
+	XIndex				int
+	XLen     			int
 	Success				bool
 }
 
@@ -295,6 +298,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.PeerId = rf.me
 	reply.PrevLogIndex = args.PrevLogIndex
 	reply.EntriesLength = len(args.Entries)
+	reply.XTerm = -1
+	reply.XIndex = -1
+	reply.XLen = -1
 
 	// deny request from older term
 	if rf.CurrentTerm > args.Term {
@@ -328,7 +334,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	lastLogIndex := len(rf.Log) - 1
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	if args.PrevLogIndex > lastLogIndex || args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
+	if args.PrevLogIndex > lastLogIndex {
+		reply.XLen = len(rf.Log)
+		return
+	} else if args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
+		reply.XTerm = rf.Log[args.PrevLogIndex].Term
+		reply.XIndex = args.PrevLogIndex
+		// search for the first index that its entry term == reply.XTerm
+		for i := args.PrevLogIndex - 1; i >= 1 && rf.killed() == false; i-- {
+			if rf.Log[i].Term != rf.Log[args.PrevLogIndex].Term {
+				reply.XIndex = i
+				break
+			}
+		}
+
 		return
 	}
 
@@ -408,8 +427,8 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 
-	close(rf.appendEntriesReplyCh)
-	close(rf.requestVoteReplyCh)
+	// close(rf.appendEntriesReplyCh)
+	// close(rf.requestVoteReplyCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -545,10 +564,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 			rf.voteCount = 0
 			// reinitialized after election
 			for i := 0; i < len(rf.peers); i++ {
-				rf.nextIndex[i] = 1
-				if i == rf.me {
-					rf.nextIndex[i] = len(rf.Log)
-				}
+				rf.nextIndex[i] = len(rf.Log)
 				rf.matchIndex[i] = 0
 			}
 			// transit to leader state	
@@ -593,8 +609,29 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
 			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		} else {
-			// decrement nextIndex
-			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex
+			// log backtracking optimization
+			if reply.XTerm == -1 {
+				// follower's log is too short
+				rf.nextIndex[reply.PeerId] = reply.XLen
+			} else {
+				hasXTerm := false
+				for i := reply.PrevLogIndex - 1; i > 0; i-- {
+					if rf.Log[i].Term == reply.XTerm {
+    				// leader has XTerm ->
+						// nextIndex = (index of leader's last entry for XTerm) + 1
+						rf.nextIndex[reply.PeerId] = i + 1
+						hasXTerm = true
+						break
+					}
+					if rf.Log[i].Term < reply.XTerm {
+						break
+					}
+				}
+				// leader does not have XTerm
+				if hasXTerm == false {
+					rf.nextIndex[reply.PeerId] = reply.XIndex
+				}
+			}
 		}
 
 		// update commit index to N
@@ -620,7 +657,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 	}
 }
 
-// FIX: no AE req sent
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
 		// pause for a random amount of time between 150 and 250
@@ -720,9 +756,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
 	rf.applyCh = applyCh
 	
-	// append dummy entry as the first entry of the log
-	// rf.Log = append(rf.Log, Entry{Term: 0})
-
 	// initialize nextIndex and matchIndex
 	for i := 0; i < len(peers); i++ {
 		rf.nextIndex[i] = 1

@@ -81,6 +81,41 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
         * the servers with the more up-to-date logs won’t be interrupted by outdated servers’ elections, and so are more likely to complete the election and become the leader
 * The leader needs to update *nextIndex[]* and *matchIndex[]* if the appendEntriesRPC succeed. But it does not tell what are the values should them update to.
 
+### Catch up log quickly
+
+Rejection message should include:
+
+```
+XTerm:  term in the conflicting entry (if any)
+XIndex: index of first entry with that term (if any)
+XLen:   log length
+```
+
+Leader Logic:
+
+```
+Case 1: leader doesn't have XTerm:
+    nextIndex = XIndex
+Case 2: leader has XTerm:
+    nextIndex = (index of leader's last entry for XTerm) + 1
+Case 3: follower's log is too short:
+    nextIndex = XLen
+```
+
+Example:
+
+```
+S1: [4, 5, 5, 5, 5]
+S2: [4, 6, 6, 6, 6]
+
+* S2 is leader
+* XTerm: 5
+* XIndex: 2 // 1-indexed
+* XLen: 6
+* S2 set nextIndex = 2 because S2 doesn't have XTerm(5)
+```
+
+
 ## Questions
 
 Q. What is configuration change in Raft? How does the membership change mechanism in Raft ensure that the cluster continues to operate normally during configuration changes?
