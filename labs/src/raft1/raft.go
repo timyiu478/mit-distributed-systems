@@ -391,7 +391,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(150) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -442,9 +442,9 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 400 and 500
+		// pause for a random amount of time between 150 and 250
 		// milliseconds.
-		ms := 400 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -582,9 +582,9 @@ func (rf *Raft) appendEntriesReplyHandler() {
 // FIX: no AE req sent
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 400 and 500
+		// pause for a random amount of time between 150 and 250
 		// milliseconds.
-		ms := 400 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -628,9 +628,9 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 250 and 350
+		// pause for a random amount of time between 150 and 200
 		// milliseconds.
-		ms := 250 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -671,7 +671,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.voteIdFor = -1
-	rf.electionTimeoutLowerBound = 1500 * time.Millisecond
+	rf.electionTimeoutLowerBound = 900 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
