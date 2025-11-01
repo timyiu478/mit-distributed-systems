@@ -1,7 +1,7 @@
 ---
 title: "In Search of an Understandable Consensus Algorithm (Extended Version)"
 description: "WIP"
-tags: ["Consensus", "Replicated State Machine", "Raft", "Leader Election", "Log Compaction"]
+tags: ["Consensus", "Replicated State Machine", "Raft", "Leader Election", "Log Compaction", "Linearisability"]
 reference: https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf
 ---
 
@@ -80,7 +80,6 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
         * this is especially important in unreliable networks where it is likely that followers have different logs; in those situations, you will often end up with only a small number of servers that a majority of servers are willing to vote for. If you reset the election timer whenever someone asks you to vote for them, this makes it equally likely for a server with an outdated log to step forward as for a server with a longer log.
         * the servers with the more up-to-date logs won’t be interrupted by outdated servers’ elections, and so are more likely to complete the election and become the leader
 * The leader needs to update *nextIndex[]* and *matchIndex[]* if the appendEntriesRPC succeed. But it does not tell what are the values should them update to.
-* When handling AppendEntries request, should the follower/candidate update the heartbeat and transit to follower state if its'log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm?
 
 ## Questions
 
@@ -110,6 +109,12 @@ Q. How does Raft ensure there is at most one leader in a given term?
 
 Q. What does "Terms act as a logical clock in Raft" mean?
 
+* What is a logical clock? A logical clock is a mechanism for capturing chronological and causal relationships in a distributed system.
+* The "Term" helps Raft to order the event of leader election and it plays a crucial role in ensuring the safety property.
+    * e.g. (1) detect stale messages (the network can send message in arbitrary order), 
+    * (2) prevent confusion of older leader
+
+
 Q. When the term ends in Raft?
 
 When the followers assume that the leader has crashed. The leader should send heartbeat messages periodically to the followers to prevent them from starting a new election.
@@ -123,6 +128,9 @@ Q. What is a committed log entry in Raft?
 
 
 Q. Why a candidate recognizes the leader as legitimate when it receives an AppendEntries RPC from the leader with a term number greater than or equal to its own current term?
+
+* It assumes the server runs the algorithm correctly. The server will only send *AppendEntries* RPC when it is leader.
+* The candidate may lose the compete of the leader election or it actually is lacking behind in terms of "term".
 
 Q. Why does Raft use randomized timers for leader election?
 
@@ -141,21 +149,53 @@ Q. Suppose we have the scenario shown in the Raft paper's Figure 7: a cluster of
 * Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs. If the logs have last entries with different terms, then the log with the later term is more up-to-date. If the logs end with the same term, then whichever log is longer is more up-to-date.
 * Assume (d), (a), and (f) all become candidates at the same time. They vote for themselves first, then send RequestVote RPCs to other servers.
 * Server (d) could be elected because it has the most up-to-date log in terms of log length and the term number of the last entry among the three candidates and it can get votes from a majority of servers.
-    * Servers that can vote for (d): (b), (c), (e), (d), and (g).
+    * Servers that can vote for (d): (a), (b), (c), (e), (d), (g), and (f).
+        * (a) and (f) will first transite back to follower state when they see (d)'s request vote
+        * then they vote for (d)
 * Server (f): (f) only. No one would vote for it because everyone else has a more up-to-date log in terms of the last entry's term number.
-* Server (a): (a), (b) and (e) can vote for it.
+* Server (a): (a), (b), (e), and (f) can vote for it. So (a) can be elected.
+    * network can be partitioned such that no one can see (d)
 
-Q. Why candidate need to store vote on persistent storage?
+Q. Why follower/candidate need to store *vote* on persistent storage?
 
-* To ensure that the vote is not lost in case of a crash or restart and the candidate never change its mind after voting.
+* To ensure that the vote is not lost in case of a crash or restart and the follower/candidate never change its mind after voting.
 * Otherwise, a server could vote multiple times (to different server) in the same term after a crash, violating the election safety property of Raft.
+    * Timeline: B requests vote from A, A votes for B, A crashes, A reboot, C requests vote from A, A votes for C
+* The server also need to store *currentTerm* on persistent storage. Otherwise, we can't distinguish the stale leader/candidate.
 
-Q. Why the leader need both *nextIndex[]* and *matchIndex[]*?
+Q. Why server need to store the logs on persistent storage?
+
+* If the server does not store the logs on persistent storage, the majorithy of committed logs can be losted.
+
+Q. Why the leader needs both *nextIndex[]* and *matchIndex[]*?
+
+* the leader cannot calculate the commit index by *nextIndex[]* because it is optimistic
+    * *nextIndex[i]* is assumed equal to *nextIndex[leader]* when initialization 
+        * decrement *nextIndex[i]* when the AppendEntries RPC failed for correcting his "guess" ->
+        * this may not correct!
+    * so the leader needs *matchIndex[]*
 
 Q. Why *nextIndex[]* and *matchIndex[]* need to reinitialize after election?
 
 
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
+
+* No.
+* The leader takes a snapshot only after an entry has been committed.
+* The leader call InstallSnapshot to send snapshots to followers that are too far behind -> follower's commitIndex <= leader's commitIndex -> follower's snapshot's last included index <= leader's commitIndex.
+* When the state machine apply this snapshot, it reflects only equal or more executed operations.
+
+
+Q. Why the *InstallSnapshot RPC* results do not need to contain *Success* field for indicating whether the receiver accept and execute his work successfully?
+
+* Servers normally take snapshots **independently**
+    * why not always leader send the snapshots to the followers?
+        * reduce the waste of bandwidth to send information that all already known by the follower
+* This RPC is used for the follower that are too far behind
+    * the follower needs the obtain the entries from leader
+    * but the leader discarded those entries and compacted them into a snapshot
+    * the follower will update it's "last log index" if it applied the snapshot successfully
+* After the call of *InstallSnapshot RPC*, the leader can use the *AppendEntries RPC*'s reply to check if the follower accept and execute his work successfully
 
 Q. How client finds the leader?
 
@@ -163,8 +203,14 @@ Q. How client finds the leader?
 * If the client’s first choice is not the leader, that server will reject the client’s request and supply information about the most recent leader it has heard from (AppendEntries requests include the network address of the leader).
 * If the leader crashes, client requests will timeout; clients then try again with randomly-chosen servers.
 
-Q. How Raft supports linearizable semantics?
+Q. How does Raft support linearizable semantics?
 
+* Linearizable semantics: each operation appears to execute instantaneously, exactly once, at some point between its invocation and its response
+* Solutions:
+    * write operation: clients assign unique serial numbers to every command
+        * The state machine tracks the latest serial number processed for each client, along with the associated response
+        * If state machine recieves a command whose serial number has already been executed, it responds immediately without re-executing the request
+    * read operation: 
 
 
 ---

@@ -560,6 +560,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		// update commit index to N
 		// if there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N
 		// and log[N].term == currentTerm
+		// we find N in optimistic approach (believe N is close to max(rf.matchIndex))
 		index := slices.Max(rf.matchIndex)
 		for ; index > rf.commitIndex && rf.killed() == false; index-- {
 			count := 0

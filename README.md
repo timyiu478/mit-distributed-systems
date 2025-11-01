@@ -18,4 +18,4 @@ My writeups at a glance:
 | # | Title | Description | Link | Tags |
 | - | - | - | - | - |
 | 1| The Design of Practical System for Fault-Tolerance Virtual Machine | A state machine replication approach to replicate machine-level state for fault-tolerant VM | [Here](papers/write-ups/vm-ft-2010.md) | `Fault-Tolerance`, `Backup` |
-| 2 | In Search of an Understandable Consensus Algorithm (Extended Version) | A consensus algorithm for managing a replicated log | [Here](papers/write-ups/raft.md) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
+| 2 | In Search of an Understandable Consensus Algorithm (Extended Version) | Raft: A consensus algorithm for managing a replicated log | [Here](papers/write-ups/raft.md) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence`, `Linearisability` |
