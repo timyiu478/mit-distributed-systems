@@ -152,6 +152,7 @@ Q. Why candidate need to store vote on persistent storage?
 
 Q. Why the leader need both *nextIndex[]* and *matchIndex[]*?
 
+Q. Why *nextIndex[]* and *matchIndex[]* need to reinitialize after election?
 
 
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
