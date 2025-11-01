@@ -9,7 +9,7 @@ My completed projects at a glance:
 | # | Title | Description | Link | Tags |
 | - | - | - | - | - |
 | 1 | A at-most-once linearisable key-value store | A key/value server for a single machine that ensures that each *Put* operation is executed at-most-once despite network failures and that the operations are linearizable.  | [Here](labs/src/kvsrv1) | `At-most-once semantics`, `Linearisability`, `KV-Store` |
-| 2 | Raft | A replicated state machine protocol for fault-tolerance  | [In Progress](labs/src/raft1) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
+| 2 | Raft | A replicated state machine protocol for fault-tolerance  | [Here](labs/src/raft1) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
 
 # Readings
 
@@ -18,5 +18,4 @@ My writeups at a glance:
 | # | Title | Description | Link | Tags |
 | - | - | - | - | - |
 | 1| The Design of Practical System for Fault-Tolerance Virtual Machine | A state machine replication approach to replicate machine-level state for fault-tolerant VM | [Here](papers/write-ups/vm-ft-2010.md) | `Fault-Tolerance`, `Backup` |
-| 2 | In Search of an Understandable Consensus Algorithm (Extended Version)
-|  | [In Progress](papers/write-ups/raft.md) | A consensus algorithm for managing a replicated log | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
+| 2 | In Search of an Understandable Consensus Algorithm (Extended Version) | A consensus algorithm for managing a replicated log | [Here](papers/write-ups/raft.md) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
