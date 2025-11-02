@@ -209,7 +209,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved RV RPC in term %d", rf.CurrentTerm), "")
+	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved RV RPC in term %d", rf.CurrentTerm), "")
 
 	// default reply
 	reply.Term = rf.CurrentTerm
@@ -377,6 +377,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// update commit index
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex + len(args.Entries))
+		DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, rf.commitIndex))
 	}
 
 	reply.Success = true
@@ -448,7 +449,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		time.Sleep(time.Duration(50) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -586,11 +587,14 @@ func (rf *Raft) requestVoteReplyHandler() {
 			// transit to leader state	
 			rf.currentState = LeaderState
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
+			DPrintf(fmt.Sprintf("Server %d become leader in term %d", rf.me, rf.CurrentTerm))
 
 			rf.persist()
 		}
 
 		rf.mu.Unlock()
+
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -632,7 +636,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
 			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		} else {
-			DPrintf(fmt.Sprintf("Append Entries RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d}", reply.XTerm, reply.XIndex, reply.XLen))
+			DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen))
 			// log backtracking optimization
 			if reply.XTerm == -1 {
 				// follower's log is too short
@@ -675,14 +679,16 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		}
 
 		rf.mu.Unlock()
+
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 200
+		// pause for a random amount of time between 50 and 100
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 50)
+		ms := 50 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -726,9 +732,9 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 200
+		// pause for a random amount of time between 10 and 50
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 50)
+		ms := 10 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -774,7 +780,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 800 * time.Millisecond
+	rf.electionTimeoutLowerBound = 600 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
@@ -782,7 +788,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
 	rf.applyCh = applyCh
 	
-	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers) * len(rf.peers) * len(rf.peers))
+	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 3 * len(rf.peers) * len(rf.peers) * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
 
 	// init rf.Log[0]
