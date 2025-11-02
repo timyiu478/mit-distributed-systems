@@ -292,7 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved AE RPC in term %d", rf.CurrentTerm), "")
+	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("recieved AE RPC in term %d", rf.CurrentTerm), "")
 
 	// default reply
 	reply.Term = rf.CurrentTerm
@@ -452,13 +452,13 @@ func (rf *Raft) ticker() {
 
 		rf.mu.Lock()
 
-		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 300) * time.Millisecond
+		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 400) * time.Millisecond
 		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(electionTimeout)) {
 			rf.mu.Unlock()
 			continue
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election for term %d", rf.CurrentTerm + 1), "")
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election for term %d", rf.CurrentTerm + 1), "")
 
 
 		// transit to candidate state
@@ -473,7 +473,7 @@ func (rf *Raft) ticker() {
 		// persist
 		rf.persist()
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.CurrentTerm), "")
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.CurrentTerm), "")
 
 		lastLogIndex := len(rf.Log) - 1
 		lastLogTerm := rf.Log[lastLogIndex].Term
@@ -500,9 +500,9 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 250
+		// pause for a random amount of time between 150 and 200
 		// milliseconds.
-		ms := 150 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -549,12 +549,12 @@ func (rf *Raft) requestVoteReplyHandler() {
 			break
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
 
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
-			break
+			continue
 		}
 
 		if reply.VoteGranted { 
@@ -585,7 +585,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 
 			// transit to leader state	
 			rf.currentState = LeaderState
-			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
+			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
 
 			rf.persist()
 		}
@@ -608,7 +608,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
-			break
+			continue
 		}
 
 		// transit to follower if discover newer term
@@ -666,6 +666,9 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			}
 			if count > len(rf.peers) / 2 && rf.Log[index].Term == rf.CurrentTerm {
 				tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
+
+				DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
+
 				rf.commitIndex = index
 				break
 			}
@@ -771,7 +774,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 900 * time.Millisecond
+	rf.electionTimeoutLowerBound = 800 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
