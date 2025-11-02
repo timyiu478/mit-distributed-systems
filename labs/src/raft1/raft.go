@@ -306,6 +306,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// deny request from older term
 	if rf.CurrentTerm > args.Term {
+		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.Term(%d) < currentTerm(%d)", rf.me, args.Term, rf.CurrentTerm))
 		return
 	}
 
@@ -325,7 +326,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if rf.currentState == CandidateState && rf.CurrentTerm == args.Term { // transit to follower state if discover leader in this term
 		// DO NOT reset the voteIdFor
 		// if a server clears voteIdFor while staying in the same term,
-		// it can later grant a second vote in the same term to another candidate
+		// it can later grant a second vote in the same term to another candidate (where its id != args.LeaderId)
 		rf.VoteIdFor = args.LeaderId
 		rf.voteCount = 0
 		rf.currentState = FollowerState
@@ -483,7 +484,7 @@ func (rf *Raft) ticker() {
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
-			go func(term int, candId int, peer int){
+			go func(term int, candId int, peer int, replyCh chan *RequestVoteReply){
 				args := &RequestVoteArgs{
 					Term: term,
 					CandidateId: candId,
@@ -493,8 +494,8 @@ func (rf *Raft) ticker() {
 				reply := new(RequestVoteReply)
 				ret := rf.sendRequestVote(peer, args, reply)
 
-				if ret && rf.killed() == false { rf.requestVoteReplyCh <- reply }
-			}(rf.CurrentTerm, rf.me, i)
+				if ret && rf.killed() == false { replyCh <- reply }
+			}(rf.CurrentTerm, rf.me, i, rf.requestVoteReplyCh)
 		}
 
 		rf.mu.Unlock()
@@ -504,10 +505,7 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 150 and 200
-		// milliseconds.
-		ms := 150 + (rand.Int63() % 50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -557,6 +555,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
+			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -594,6 +593,8 @@ func (rf *Raft) requestVoteReplyHandler() {
 		}
 
 		rf.mu.Unlock()
+
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -611,6 +612,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
+			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -626,6 +628,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 
 		if rf.currentState != LeaderState {
 			rf.mu.Unlock()
+			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -635,9 +638,13 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
 			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		} else {
-			DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen))
-			// log backtracking optimization
-			if reply.XTerm == -1 {
+			DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d, PeerID: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen, reply.PeerId))
+			// TODO: findout why this can happen
+			// when the reply.Term >= rf.currentTerm
+			if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 {
+				// normal log backtracking: decrement nextIndex by 1
+				rf.nextIndex[reply.PeerId] = max(1, reply.PrevLogIndex)
+			}  else if reply.XTerm == -1 { // log backtracking optimization
 				// follower's log is too short
 				rf.nextIndex[reply.PeerId] = reply.XLen
 			} else {
@@ -652,7 +659,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 					}
 				}
 			}
-
 		}
 
 		// update commit index to N
@@ -678,12 +684,14 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		}
 
 		rf.mu.Unlock()
+
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		time.Sleep(time.Duration(90) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -704,7 +712,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[prevLogIndex].Term
 
-			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int){
+			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int, replyCh chan *AppendEntriesReply){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -715,8 +723,8 @@ func (rf *Raft) appendEntriesReqHandler() {
 				}
 				reply := new(AppendEntriesReply)
 				ret := rf.sendAppendEntries(peer, args, reply)
-				if ret && rf.killed() == false { rf.appendEntriesReplyCh <- reply }
-			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i)
+				if ret && rf.killed() == false { replyCh <- reply }
+			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i, rf.appendEntriesReplyCh)
 
 		}
 
@@ -726,6 +734,8 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
+		time.Sleep(time.Duration(10) * time.Millisecond)
+
 		rf.mu.Lock()
 
 		if len(rf.Log) < rf.commitIndex {
@@ -777,8 +787,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
 	rf.applyCh = applyCh
 	
-	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 3 * len(rf.peers) * len(rf.peers) * len(rf.peers))
-	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
+	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers))
+	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers))
 
 	// init rf.Log[0]
 	rf.Log[0].Term = 0
