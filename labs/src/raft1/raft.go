@@ -454,7 +454,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 
 		// Check if a leader election should be started.
-		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 250) * time.Millisecond
+		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 200) * time.Millisecond
 		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(electionTimeout)) {
 			rf.mu.Unlock()
 			continue
@@ -583,6 +583,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 				rf.nextIndex[i] = len(rf.Log)
 				rf.matchIndex[i] = 0
 			}
+			rf.matchIndex[rf.me] = len(rf.Log) - 1
 
 			// transit to leader state	
 			rf.currentState = LeaderState
@@ -685,7 +686,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(90) * time.Millisecond)
+		time.Sleep(time.Duration(70) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -702,7 +703,9 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.CurrentTerm), "")
 
-			entries := rf.Log[rf.nextIndex[i]:]
+			subLog := rf.Log[rf.nextIndex[i]:]
+			entries := make([]Entry, len(subLog))
+			copy(entries, subLog)
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[prevLogIndex].Term
 
