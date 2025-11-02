@@ -244,7 +244,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		reply.VoteGranted = true
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.VoteIdFor, rf.CurrentTerm), "")
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.VoteIdFor, rf.CurrentTerm), "")
 	}
 }
 
@@ -448,12 +448,12 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
-		// Check if a leader election should be started.
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		time.Sleep(time.Duration(10) * time.Millisecond)
 
 		rf.mu.Lock()
 
-		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 400) * time.Millisecond
+		// Check if a leader election should be started.
+		electionTimeout := rf.electionTimeoutLowerBound + time.Duration(rand.Int63() % 250) * time.Millisecond
 		if rf.currentState == LeaderState || time.Now().Before(rf.lastHeartbeat.Add(electionTimeout)) {
 			rf.mu.Unlock()
 			continue
@@ -473,6 +473,8 @@ func (rf *Raft) ticker() {
 		rf.lastHeartbeat = time.Now()
 		// persist
 		rf.persist()
+
+		DPrintf(fmt.Sprintf("Server %d start election in term %d", rf.me, rf.CurrentTerm))
 
 		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.CurrentTerm), "")
 
@@ -496,6 +498,7 @@ func (rf *Raft) ticker() {
 		}
 
 		rf.mu.Unlock()
+
 	}
 }
 
@@ -513,7 +516,6 @@ func (rf *Raft) heartbeat() {
 			rf.mu.Unlock()
 			continue 
 		}
-
 
 		// broadcast heartbeat if it is leader
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
@@ -582,7 +584,6 @@ func (rf *Raft) requestVoteReplyHandler() {
 				rf.nextIndex[i] = len(rf.Log)
 				rf.matchIndex[i] = 0
 			}
-			rf.matchIndex[rf.me] = len(rf.Log) - 1
 
 			// transit to leader state	
 			rf.currentState = LeaderState
@@ -593,8 +594,6 @@ func (rf *Raft) requestVoteReplyHandler() {
 		}
 
 		rf.mu.Unlock()
-
-		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -607,7 +606,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			break
 		}
 
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
 
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
@@ -669,7 +668,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 				}
 			}
 			if count > len(rf.peers) / 2 && rf.Log[index].Term == rf.CurrentTerm {
-				tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
+				// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
 
 				DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
 
@@ -679,17 +678,12 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		}
 
 		rf.mu.Unlock()
-
-		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 50 and 100
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -704,7 +698,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 		  // If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			if i == rf.me || rf.nextIndex[i] > lastLogIndex { continue }
 
-			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.CurrentTerm), "")
+			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.CurrentTerm), "")
 
 			entries := rf.Log[rf.nextIndex[i]:]
 			prevLogIndex := rf.nextIndex[i] - 1
@@ -732,11 +726,6 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		// pause for a random amount of time between 10 and 50
-		// milliseconds.
-		ms := 10 + (rand.Int63() % 50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-
 		rf.mu.Lock()
 
 		if len(rf.Log) < rf.commitIndex {
@@ -780,7 +769,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 600 * time.Millisecond
+	rf.electionTimeoutLowerBound = 650 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
