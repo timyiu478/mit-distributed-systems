@@ -251,6 +251,13 @@ Q. How does Raft support linearizable semantics?
         * The state machine tracks the latest serial number processed for each client, along with the associated response
         * If state machine recieves a command whose serial number has already been executed, it responds immediately without re-executing the request
 
+Q. The difference between the RequestVote RPC arguments and the AppendEntries RPC arguments. RequestVote has *lastLogIndex/Term*, while AppendEntries has *prevLogIndex/Term*. Are these equivalent?
+
+* No, they are not equivalent.
+* The *lastLogIndex/Term* is the candidate/requestvote request sender's last log index/term.
+* The *prevLogIndex/Term* is the follower's the log index/term immediate before the start log index of the new entries sent by the leader.
+
+
 
 ---
 
