@@ -234,7 +234,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// least as up-to-date as receiver’s log, grant vote
 	// See the section 5.4.1 of the paper for the definition of "up-to-date"
 	lastLogIndex := len(rf.Log) - 1
-	if (rf.VoteIdFor == -1 || rf.VoteIdFor == args.CandidateId) && (lastLogIndex <= args.LastLogIndex && rf.Log[lastLogIndex].Term == args.LastLogTerm || rf.Log[lastLogIndex].Term < args.LastLogTerm) {
+	lastLogTerm  := rf.Log[lastLogIndex].Term
+	upToDate := (args.LastLogTerm > lastLogTerm) || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex)
+	if (rf.VoteIdFor == -1 || rf.VoteIdFor == args.CandidateId) && upToDate {
 		// vote for first valid candidate 
 		rf.VoteIdFor = args.CandidateId
 		// reset election timer
@@ -562,11 +564,13 @@ func (rf *Raft) requestVoteReplyHandler() {
 		if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
 			rf.VoteIdFor = -1
 			rf.voteCount = 0
-			// reinitialized after election
+			// reinitialize nextIndex & matchIndex after election
 			for i := 0; i < len(rf.peers); i++ {
 				rf.nextIndex[i] = len(rf.Log)
 				rf.matchIndex[i] = 0
 			}
+			rf.matchIndex[i] = len(rf.Log) - 1
+
 			// transit to leader state	
 			rf.currentState = LeaderState
 			tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
