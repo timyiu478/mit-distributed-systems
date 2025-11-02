@@ -338,6 +338,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if args.PrevLogIndex > lastLogIndex {
 		reply.XLen = len(rf.Log)
+
+		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > lastLogIndex and set XLen to %d", rf.me, reply.XLen))
+
 		return
 	} else if args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
 		reply.XTerm = rf.Log[args.PrevLogIndex].Term
@@ -351,6 +354,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
+
+		DPrintf(fmt.Sprintf("Server %d: deny AE req because terms are different and set XTerm to %d and XIndex to %d", rf.me, reply.XTerm, reply.XIndex))
 
 		return
 	}
@@ -546,6 +551,12 @@ func (rf *Raft) requestVoteReplyHandler() {
 
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
 
+		// deny reply from older term
+		if rf.CurrentTerm > reply.Term {
+			rf.mu.Unlock()
+			break
+		}
+
 		if reply.VoteGranted { 
 			rf.voteCount += 1 
 		// discover new term
@@ -564,12 +575,13 @@ func (rf *Raft) requestVoteReplyHandler() {
 		if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
 			rf.VoteIdFor = -1
 			rf.voteCount = 0
+
 			// reinitialize nextIndex & matchIndex after election
 			for i := 0; i < len(rf.peers); i++ {
 				rf.nextIndex[i] = len(rf.Log)
 				rf.matchIndex[i] = 0
 			}
-			rf.matchIndex[i] = len(rf.Log) - 1
+			rf.matchIndex[rf.me] = len(rf.Log) - 1
 
 			// transit to leader state	
 			rf.currentState = LeaderState
@@ -593,6 +605,12 @@ func (rf *Raft) appendEntriesReplyHandler() {
 
 		tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
 
+		// deny reply from older term
+		if rf.CurrentTerm > reply.Term {
+			rf.mu.Unlock()
+			break
+		}
+
 		// transit to follower if discover newer term
 		if reply.Term > rf.CurrentTerm && rf.killed() == false {
 			rf.CurrentTerm = reply.Term
@@ -608,13 +626,15 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			continue
 		}
 
+
 		if reply.Success {
 			// update nextIndex and matchIndex for follower
 			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
 			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		} else {
+			DPrintf(fmt.Sprintf("Append Entries RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d}", reply.XTerm, reply.XIndex, reply.XLen))
 			// log backtracking optimization
-			if reply.XTerm == -1 || reply.XIndex == -1 {
+			if reply.XTerm == -1 {
 				// follower's log is too short
 				rf.nextIndex[reply.PeerId] = reply.XLen
 			} else {
@@ -622,9 +642,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 				rf.nextIndex[reply.PeerId] = reply.XIndex
 
 				for i := reply.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
-					if rf.Log[i].Term < reply.XTerm {
-						break
-					}
 					if rf.Log[i].Term == reply.XTerm {
     				// leader has XTerm -> nextIndex = (index of leader's last entry for XTerm) + 1
 						rf.nextIndex[reply.PeerId] = i + 1
@@ -632,6 +649,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 					}
 				}
 			}
+
 		}
 
 		// update commit index to N
@@ -681,7 +699,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 			entries := rf.Log[rf.nextIndex[i]:]
 			prevLogIndex := rf.nextIndex[i] - 1
-			prevLogTerm := rf.Log[rf.nextIndex[i] - 1].Term
+			prevLogTerm := rf.Log[prevLogIndex].Term
 
 			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int){
 				args := &AppendEntriesArgs{
@@ -763,6 +781,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers) * len(rf.peers) * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
+
+	// init rf.Log[0]
+	rf.Log[0].Term = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
