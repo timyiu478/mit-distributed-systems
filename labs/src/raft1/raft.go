@@ -63,8 +63,8 @@ type Raft struct {
 
 	applyCh 							chan raftapi.ApplyMsg
 	
-	requestVoteReplyCh 		chan *RequestVoteReply
-	appendEntriesReplyCh 	chan *AppendEntriesReply
+	requestVoteReplyCh 		chan RequestVoteReply
+	appendEntriesReplyCh 	chan AppendEntriesReply
 }
 
 // return currentTerm and whether this server
@@ -484,17 +484,17 @@ func (rf *Raft) ticker() {
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
-			go func(term int, candId int, peer int, replyCh chan *RequestVoteReply){
+			go func(term int, candId int, peer int, replyCh chan RequestVoteReply){
 				args := &RequestVoteArgs{
 					Term: term,
 					CandidateId: candId,
 					LastLogIndex: lastLogIndex,
 					LastLogTerm: lastLogTerm,
 				}
-				reply := new(RequestVoteReply)
+				reply := &RequestVoteReply{}
 				ret := rf.sendRequestVote(peer, args, reply)
 
-				if ret && rf.killed() == false { replyCh <- reply }
+				if ret && rf.killed() == false { replyCh <- *reply }
 			}(rf.CurrentTerm, rf.me, i, rf.requestVoteReplyCh)
 		}
 
@@ -522,7 +522,7 @@ func (rf *Raft) heartbeat() {
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[rf.nextIndex[i] - 1].Term
 
-			go func(term int, leaderId int, prevLogIndex, prevLogTerm, commitIndex int, peer int){
+			go func(term int, leaderId int, prevLogIndex, prevLogTerm, commitIndex int, peer int, replyCh chan AppendEntriesReply){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -530,10 +530,10 @@ func (rf *Raft) heartbeat() {
 					PrevLogTerm: prevLogTerm,
 					LeaderCommit: commitIndex,
 				}
-				reply := new(AppendEntriesReply)
+				reply := &AppendEntriesReply{}
 				ret := rf.sendAppendEntries(peer, args, reply)
-				if ret && rf.killed() == false { rf.appendEntriesReplyCh <- reply }
-			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm,rf.commitIndex, i)
+				if ret && rf.killed() == false { replyCh <- *reply }
+			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, i, rf.appendEntriesReplyCh)
 			
 		}
 
@@ -562,7 +562,8 @@ func (rf *Raft) requestVoteReplyHandler() {
 		if reply.VoteGranted { 
 			rf.voteCount += 1 
 		// discover new term
-		} else if reply.Term > rf.CurrentTerm {
+		} 
+		if reply.Term > rf.CurrentTerm {
 			// catch up the term
 			rf.CurrentTerm = reply.Term
 			// transit back to follower state
@@ -617,7 +618,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		}
 
 		// transit to follower if discover newer term
-		if reply.Term > rf.CurrentTerm && rf.killed() == false {
+		if reply.Term > rf.CurrentTerm {
 			rf.CurrentTerm = reply.Term
 			rf.VoteIdFor = -1
 			rf.voteCount = 0
@@ -712,7 +713,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[prevLogIndex].Term
 
-			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int, replyCh chan *AppendEntriesReply){
+			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int, replyCh chan AppendEntriesReply){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -721,9 +722,9 @@ func (rf *Raft) appendEntriesReqHandler() {
 					LeaderCommit: commitIndex,
 					Entries: entries,
 				}
-				reply := new(AppendEntriesReply)
+				reply := &AppendEntriesReply{}
 				ret := rf.sendAppendEntries(peer, args, reply)
-				if ret && rf.killed() == false { replyCh <- reply }
+				if ret && rf.killed() == false { replyCh <- *reply }
 			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i, rf.appendEntriesReplyCh)
 
 		}
@@ -787,8 +788,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
 	rf.applyCh = applyCh
 	
-	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers))
-	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers))
+	rf.appendEntriesReplyCh = make(chan AppendEntriesReply, 2 * len(rf.peers))
+	rf.requestVoteReplyCh = make(chan RequestVoteReply, 2 * len(rf.peers))
 
 	// init rf.Log[0]
 	rf.Log[0].Term = 0
