@@ -752,18 +752,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
 	rf.applyCh = applyCh
 	
-	// initialize nextIndex and matchIndex
-	for i := 0; i < len(peers); i++ {
-		rf.nextIndex[i] = 1
-		rf.matchIndex[i] = 0
-	}
-
 	rf.appendEntriesReplyCh = make(chan *AppendEntriesReply, 2 * len(rf.peers) * len(rf.peers) * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan *RequestVoteReply, 2 * len(rf.peers) * len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
