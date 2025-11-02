@@ -6,4 +6,6 @@ See [docs/raft_diagram.pdf](docs/raft_diagram.pdf)
 
 https://thesecretlivesofdata.com/raft/
 
+# Implementation Tips
 
+1. Like a request, the reply can be delayed, and the reply handler can receive a reply from a past term
