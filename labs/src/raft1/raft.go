@@ -555,7 +555,6 @@ func (rf *Raft) requestVoteReplyHandler() {
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
-			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -594,8 +593,6 @@ func (rf *Raft) requestVoteReplyHandler() {
 		}
 
 		rf.mu.Unlock()
-
-		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -613,7 +610,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		// deny reply from older term
 		if rf.CurrentTerm > reply.Term {
 			rf.mu.Unlock()
-			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -629,7 +625,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 
 		if rf.currentState != LeaderState {
 			rf.mu.Unlock()
-			time.Sleep(time.Duration(10) * time.Millisecond)
 			continue
 		}
 
@@ -685,8 +680,6 @@ func (rf *Raft) appendEntriesReplyHandler() {
 		}
 
 		rf.mu.Unlock()
-
-		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
