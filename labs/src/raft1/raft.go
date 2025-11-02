@@ -135,7 +135,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var log []Entry
 	if d.Decode(&voteIdFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil {
-		// TODO
+		panic("Failed to decode previously persisted state")
 	} else {
 		rf.VoteIdFor = voteIdFor
 		rf.CurrentTerm = currentTerm
@@ -339,9 +339,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	} else if args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
 		reply.XTerm = rf.Log[args.PrevLogIndex].Term
+
 		// search for the first index that its entry term == reply.XTerm
+		// by searching the last index that its entry term != reply.XTerm 
+		reply.XIndex = 1
 		for i := args.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
-			if rf.Log[i].Term != rf.Log[args.PrevLogIndex].Term || i == 0 {
+			if rf.Log[i].Term != rf.Log[args.PrevLogIndex].Term {
 				reply.XIndex = i + 1
 				break
 			}
@@ -511,7 +514,7 @@ func (rf *Raft) heartbeat() {
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[rf.nextIndex[i] - 1].Term
 
-			go func(term int, leaderId int, peer int, commitIndex int){
+			go func(term int, leaderId int, prevLogIndex, prevLogTerm, commitIndex int, peer int){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -522,7 +525,7 @@ func (rf *Raft) heartbeat() {
 				reply := new(AppendEntriesReply)
 				ret := rf.sendAppendEntries(peer, args, reply)
 				if ret && rf.killed() == false { rf.appendEntriesReplyCh <- reply }
-			}(rf.CurrentTerm, rf.me, i, rf.commitIndex)
+			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm,rf.commitIndex, i)
 			
 		}
 
@@ -607,25 +610,22 @@ func (rf *Raft) appendEntriesReplyHandler() {
 			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		} else {
 			// log backtracking optimization
-			if reply.XTerm == -1 {
+			if reply.XTerm == -1 || reply.XIndex == -1 {
 				// follower's log is too short
 				rf.nextIndex[reply.PeerId] = reply.XLen
 			} else {
-				hasXTerm := false
-				for i := reply.PrevLogIndex - 1; i > 0 && rf.killed() == false; i-- {
-					if rf.Log[i].Term == reply.XTerm {
-    				// leader has XTerm ->
-						// nextIndex = (index of leader's last entry for XTerm) + 1
-						rf.nextIndex[reply.PeerId] = i + 1
-						hasXTerm = true
-						break
-					} else if rf.Log[i].Term < reply.XTerm {
+				// leader does not have XTerm
+				rf.nextIndex[reply.PeerId] = reply.XIndex
+
+				for i := reply.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
+					if rf.Log[i].Term < reply.XTerm {
 						break
 					}
-				}
-				// leader does not have XTerm
-				if hasXTerm == false {
-					rf.nextIndex[reply.PeerId] = reply.XIndex
+					if rf.Log[i].Term == reply.XTerm {
+    				// leader has XTerm -> nextIndex = (index of leader's last entry for XTerm) + 1
+						rf.nextIndex[reply.PeerId] = i + 1
+						break
+					}
 				}
 			}
 		}
@@ -679,7 +679,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[rf.nextIndex[i] - 1].Term
 
-			go func(term int, leaderId int, peer int, commitIndex int){
+			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -691,7 +691,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 				reply := new(AppendEntriesReply)
 				ret := rf.sendAppendEntries(peer, args, reply)
 				if ret && rf.killed() == false { rf.appendEntriesReplyCh <- reply }
-			}(rf.CurrentTerm, rf.me, i, rf.commitIndex)
+			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i)
 
 		}
 
@@ -707,6 +707,11 @@ func (rf *Raft) committedLogHandler() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
+
+		if len(rf.Log) < rf.commitIndex {
+			rf.mu.Unlock()
+			continue
+		}
 
 		// Send each newly committed entry on applyCh on each peer
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
