@@ -371,7 +371,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// delete conflict existing entrie(s)
 		if logIndex < len(rf.Log) && rf.Log[logIndex].Term != args.Entries[i].Term {
 			rf.Log = rf.Log[:logIndex]
-			rf.persist()
 			break
 		}
 	}
@@ -379,8 +378,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	logIndex := args.PrevLogIndex + i + 1
 	if logIndex > len(rf.Log) - 1 {
 		rf.Log = append(rf.Log, args.Entries[i:]...)
-		rf.persist()
 	}
+	// persist once after all modifications
+	rf.persist()
 
 	// update commit index
 	if args.LeaderCommit > rf.commitIndex {

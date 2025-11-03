@@ -216,7 +216,6 @@ Q. Why *nextIndex[]* and *matchIndex[]* need to reinitialize after election?
 * The followers cannot keep *nextIndex[]* and *matchIndex[]* "in-sync" because the append entries flow is from leader to follower.
 * Consider this leader sequence: [S1, S2, S1]. S1 cannot use its old *nextIndex[]* and *matchIndex[]* because S2 can overwrite some of the uncommitted entries to the followers, and then S2 crashed before committing those entries.
 * If S1 does not reinitialise *matchIndex[]* after election, S1 may incorrectly commit entries that are not stored by the majority.
-* Note: DO NOT reinitialize `rf.matchIndex[rf.me] = len(rf.log) -1` after election.
 
 
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
