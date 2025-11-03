@@ -362,16 +362,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// handle Entries
-	for i := 0; i < len(args.Entries) && rf.killed() == false; i++ {
+	i := 0
+	for ; i < len(args.Entries) && rf.killed() == false; i++ {
 		logIndex := args.PrevLogIndex + i + 1
+		if logIndex > len(rf.Log) - 1 {
+			break
+		}
 		// delete conflict existing entrie(s)
 		if logIndex < len(rf.Log) && rf.Log[logIndex].Term != args.Entries[i].Term {
 			rf.Log = rf.Log[:logIndex]
+			rf.persist()
+			break
 		}
-		// append any new entries not already in the log
-		if logIndex > len(rf.Log) - 1 {
-			rf.Log = append(rf.Log, args.Entries[i])	
-		}
+	}
+	// append any new entries not already in the log
+	logIndex := args.PrevLogIndex + i + 1
+	if logIndex > len(rf.Log) - 1 {
+		rf.Log = append(rf.Log, args.Entries[i:]...)
 		rf.persist()
 	}
 
