@@ -503,44 +503,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) heartbeat() {
-	for rf.killed() == false {
-		time.Sleep(time.Duration(100) * time.Millisecond)
-
-		rf.mu.Lock()
-
-		// do nothing if it is not leader
-		if rf.currentState != LeaderState { 
-			rf.mu.Unlock()
-			continue 
-		}
-
-		// broadcast heartbeat if it is leader
-		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
-			if i == rf.me { continue }
-			
-			prevLogIndex := rf.nextIndex[i] - 1
-			prevLogTerm := rf.Log[rf.nextIndex[i] - 1].Term
-
-			go func(term int, leaderId int, prevLogIndex, prevLogTerm, commitIndex int, peer int, replyCh chan AppendEntriesReply){
-				args := &AppendEntriesArgs{
-					Term: term,
-					LeaderId: leaderId,
-					PrevLogIndex: prevLogIndex,
-					PrevLogTerm: prevLogTerm,
-					LeaderCommit: commitIndex,
-				}
-				reply := &AppendEntriesReply{}
-				ret := rf.sendAppendEntries(peer, args, reply)
-				if ret && rf.killed() == false { replyCh <- *reply }
-			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, i, rf.appendEntriesReplyCh)
-			
-		}
-
-		rf.mu.Unlock()
-	}
-}
-
 func (rf *Raft) requestVoteReplyHandler() {
 	for reply := range rf.requestVoteReplyCh {
 		rf.mu.Lock()
@@ -686,7 +648,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(70) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -698,14 +660,20 @@ func (rf *Raft) appendEntriesReqHandler() {
 		lastLogIndex := len(rf.Log) - 1
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
-		  // If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
-			if i == rf.me || rf.nextIndex[i] > lastLogIndex { continue }
+			if i == rf.me { continue }
 
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.CurrentTerm), "")
 
-			subLog := rf.Log[rf.nextIndex[i]:]
-			entries := make([]Entry, len(subLog))
-			copy(entries, subLog)
+			// Heartbeat with empty entries
+			entries := make([]Entry, 0)
+
+		  // If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+			if rf.nextIndex[i] <= lastLogIndex {
+				subLog := rf.Log[rf.nextIndex[i]:]
+				entries = make([]Entry, len(subLog))
+				copy(entries, subLog)
+			}
+
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[prevLogIndex].Term
 
@@ -776,7 +744,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 650 * time.Millisecond
+	rf.electionTimeoutLowerBound = 800 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
@@ -795,9 +763,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
-	// start heartbeat goroutine to start hear beating
-	go rf.heartbeat()
 
 	// start reply handlers
 	go rf.requestVoteReplyHandler()
