@@ -81,6 +81,41 @@ Figure 7 walk-through: https://youtu.be/R2-9bsKmEbo?si=Kn_dFKJ3QrsBv65j&t=4509
         * the servers with the more up-to-date logs won’t be interrupted by outdated servers’ elections, and so are more likely to complete the election and become the leader
 * The leader needs to update *nextIndex[]* and *matchIndex[]* if the appendEntriesRPC succeed. But it does not tell what are the values should them update to.
 
+### Catch up log quickly
+
+Rejection message should include:
+
+```
+XTerm:  term in the conflicting entry (if any)
+XIndex: index of first entry with that term (if any)
+XLen:   log length
+```
+
+Leader Logic:
+
+```
+Case 1: leader doesn't have XTerm:
+    nextIndex = XIndex
+Case 2: leader has XTerm:
+    nextIndex = (index of leader's last entry for XTerm) + 1
+Case 3: follower's log is too short:
+    nextIndex = XLen
+```
+
+Example:
+
+```
+S1: [4, 5, 5, 5, 5]
+S2: [4, 6, 6, 6, 6]
+
+* S2 is leader
+* XTerm: 5
+* XIndex: 2 // 1-indexed
+* XLen: 6
+* S2 set nextIndex = 2 because S2 doesn't have XTerm(5)
+```
+
+
 ## Questions
 
 Q. What is configuration change in Raft? How does the membership change mechanism in Raft ensure that the cluster continues to operate normally during configuration changes?
@@ -178,6 +213,11 @@ Q. Why the leader needs both *nextIndex[]* and *matchIndex[]*?
 Q. Why *nextIndex[]* and *matchIndex[]* need to reinitialize after election?
 
 
+* The followers cannot keep *nextIndex[]* and *matchIndex[]* "in-sync" because the append entries flow is from leader to follower.
+* Consider this leader sequence: [S1, S2, S1]. S1 cannot use its old *nextIndex[]* and *matchIndex[]* because S2 can overwrite some of the uncommitted entries to the followers, and then S2 crashed before committing those entries.
+* If S1 does not reinitialise *matchIndex[]* after election, S1 may incorrectly commit entries that are not stored by the majority.
+
+
 Q. Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
 
 * No.
@@ -210,7 +250,13 @@ Q. How does Raft support linearizable semantics?
     * write operation: clients assign unique serial numbers to every command
         * The state machine tracks the latest serial number processed for each client, along with the associated response
         * If state machine recieves a command whose serial number has already been executed, it responds immediately without re-executing the request
-    * read operation: 
+
+Q. The difference between the RequestVote RPC arguments and the AppendEntries RPC arguments. RequestVote has *lastLogIndex/Term*, while AppendEntries has *prevLogIndex/Term*. Are these equivalent?
+
+* No, they are not equivalent.
+* The *lastLogIndex/Term* is the candidate/requestvote request sender's last log index/term.
+* The *prevLogIndex/Term* is the follower's the log index/term immediate before the start log index of the new entries sent by the leader.
+
 
 
 ---
