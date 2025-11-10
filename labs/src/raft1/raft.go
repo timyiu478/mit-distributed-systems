@@ -51,6 +51,11 @@ type Raft struct {
 	commitIndex   int
 	lastApplied   int
 
+	LastIncludedIndex					int 
+	LastIncludedTerm					int
+
+	snapshot      []byte
+
 	nextIndex 		[]int // for each server, index of the next log entry to send to that server
 	matchIndex 		[]int // for each server, index of highest log entry known to be replicated on server
 
@@ -65,6 +70,7 @@ type Raft struct {
 	
 	requestVoteReplyCh 		chan RequestVoteReply
 	appendEntriesReplyCh 	chan AppendEntriesReply
+	installSnapshotReplyCh 	chan InstallSnapshotReply
 }
 
 // return currentTerm and whether this server
@@ -105,9 +111,11 @@ func (rf *Raft) persist() {
 
 	e.Encode(rf.VoteIdFor)
 	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.LastIncludedIndex)
+	e.Encode(rf.LastIncludedTerm)
 	e.Encode(rf.Log)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.snapshot)
 }
 
 
@@ -133,12 +141,16 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var voteIdFor int
 	var currentTerm int
+	var lastIncludedIndex int
+	var lastIncludedTerm int
 	var log []Entry
-	if d.Decode(&voteIdFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil {
+	if d.Decode(&voteIdFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
 		panic("Failed to decode previously persisted state")
 	} else {
 		rf.VoteIdFor = voteIdFor
 		rf.CurrentTerm = currentTerm
+		rf.LastIncludedIndex = lastIncludedIndex
+		rf.LastIncludedTerm  = lastIncludedTerm
 		rf.Log = log
 	}
 }
@@ -158,6 +170,18 @@ func (rf *Raft) PersistBytes() int {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.LastIncludedTerm  = rf.Log[index - rf.LastIncludedIndex - 1].Term
+	trimedLog := rf.Log[index - rf.LastIncludedIndex:]
+	rf.LastIncludedIndex = index
+	rf.snapshot = snapshot
+	
+	rf.Log = make([]Entry, len(trimedLog))
+	copy(rf.Log, trimedLog)
+
+	rf.persist()
 }
 
 
@@ -202,12 +226,19 @@ type AppendEntriesReply struct {
 	Success				bool
 }
 
-type InstallSnapshotArgs {
-	// TODO
+// InstallSnapshot RPC request structure
+// No offset mechanism
+type InstallSnapshotArgs struct {
+	Term 								int
+	LeaderId						int
+	LastIncludedIndex		int
+	LastIncludedTerm    int
+	Data								[]byte
 }
 
-type InstallSnapshotReply {
-	// TODO
+// InstallSnapshot RPC reply structure
+type InstallSnapshotReply struct {
+	Term 								int
 }
 
 
@@ -408,8 +439,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 // InstallSnapshot RPC
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-		// TODO
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// default reply
+	reply.Term = rf.CurrentTerm
+
+	// deny request if term < currentTerm
+	if args.Term > rf.CurrentTerm {
+		DPrintf(fmt.Sprintf("Server %d: deny InstallSnapshot req because req.Term(%d) < rf.CurrentTerm(%d)", rf.me, args.Term, rf.CurrentTerm))
+		return
+	}
+
+	if args.LastIncludedIndex <= rf.LastIncludedIndex {
+		return
+	}
+
+	trimedLog := rf.Log[args.LastIncludedIndex - rf.LastIncludedIndex:]
+	rf.Log = make([]Entry, len(trimedLog))
+	copy(rf.Log, trimedLog)
+
+	rf.LastIncludedIndex = args.LastIncludedIndex
+	rf.LastIncludedTerm = args.LastIncludedTerm
+	rf.snapshot = args.Data
+	
+	rf.persist()
+
 }
+
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -724,6 +781,24 @@ func (rf *Raft) appendEntriesReqHandler() {
 	}
 }
 
+func (rf *Raft) installSnapshotReplyHandler() {
+	for reply := range rf.installSnapshotReplyCh {
+		rf.mu.Lock()
+
+		// transit to follower if discover newer term
+		if reply.Term > rf.CurrentTerm {
+			rf.CurrentTerm = reply.Term
+			rf.VoteIdFor = -1
+			rf.voteCount = 0
+			rf.currentState = FollowerState
+
+			rf.persist()
+		}
+
+		rf.mu.Unlock()
+	}
+}
+
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
 		time.Sleep(time.Duration(10) * time.Millisecond)
@@ -781,12 +856,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.appendEntriesReplyCh = make(chan AppendEntriesReply, 2 * len(rf.peers))
 	rf.requestVoteReplyCh = make(chan RequestVoteReply, 2 * len(rf.peers))
+	rf.installSnapshotReplyCh = make(chan InstallSnapshotReply, len(rf.peers))
+
+	rf.LastIncludedIndex       	= 0
+	rf.LastIncludedTerm       	= 0
 
 	// init rf.Log[0]
 	rf.Log[0].Term = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.snapshot = persister.ReadSnapshot()
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -794,6 +874,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start reply handlers
 	go rf.requestVoteReplyHandler()
 	go rf.appendEntriesReplyHandler()
+	go rf.installSnapshotReplyHandler()
 
 	// start commit handlers
 	go rf.committedLogHandler()
