@@ -154,8 +154,7 @@ Q. Why *Record Append* is restricted to be at most one-fourth of the maximum chu
 
 Q. Why does file creation not require a write lock on the parent directory?
 
-* Because there is no "directory"?
-* What is the purpose of the directory?
+TODO
 
 Q. Why we want to limit the number of "recent" creations on each chunk server?
 
