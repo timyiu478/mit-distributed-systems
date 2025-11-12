@@ -1,6 +1,6 @@
 ---
 title: "ZooKeeper: Wait-free coordination for Internet-scale systems"
-description: ""
+description: "A storage system specialized to fault tolerant high-performance configuration management"
 tags: ["Coordination Primitive", "Configuration Management", "Atomic Broadcost Protocol"]
 reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 ---
@@ -13,9 +13,22 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 
 ## Takeaways
 
-* How to build coordination primitives using Zookeeper
-?? How the system guarantees(per client of FIFO execution of requests and asynchronous-linerazability) interact
+* How to build coordination primitives using Zookeeper weaker consistency API
+    * watch, sessions, notifications, write-linearizability 
+* How the system guarantees(per client of FIFO execution of requests and asynchronous-linerazability) interact
 ?? Zab: a leader-based atomic broadcast protocol to guarantee that update operations satisfy linearisability 
+
+## Strengths and Weaknesses
+
++: 
+
+* can implement different coordination primitives using weaker consistency API
+* high performance for read
+* fault tolerant storage
+
+-:
+
+* reads are not linearisable
 
 ---
 
@@ -41,12 +54,13 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
         * observe the prefix of the log from other clients
         * => stale data
         * no reads from the past (the prefix length never decrease)
-    * MIT DS Lecture 9 Zookeeper explains this definition in details: https://www.youtube.com/watch?v=HYTDDLo2vSE
 
 * Section 2.2 explains how these 2 guarantees interact
 
 * the ordering guarantee for the notifications:
-    * If a client is watching for a change, the client will see the notification event before it sees the new state of the system after the change is made
+    * If a client is watching for a change, the client will see the notification event BEFORE it sees the new state of the system after the change is made
+
+* MIT DS Lecture 9 Zookeeper explains the guarantees in details: https://www.youtube.com/watch?v=HYTDDLo2vSE
 
 * Liveness: if a majority of ZooKeeper servers are active and communicating the service will be available
 * Durability: if the ZooKeeper service responds successfully to a change request, that change persists across any number of failures as long as a quorum of servers is eventually able to recover.
@@ -64,6 +78,13 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
     * no `open` or `close` methods
     * eliminates extra state(e.g. full path of the znode) that the server would need to maintain
 * version paramter for conditional update
+
+Watch Flag:
+
+The paper does not tell much about how does the notification guarantee is implemented.
+
+![](assets/zookeeper_usage_of_notification.png)
+
 
 ## Examples of Primitives
 
@@ -85,7 +106,7 @@ Simple Locks without Herd Effect:
 
 ## Evaluation
 
-
+![](assets/zookeeper_evaluation.png)
 
 ---
 
@@ -96,11 +117,13 @@ Q. How is the configuration used for coordination?
 * The configuration is a list of operational parameters for the system process that can change dynamically.
 * operational parameters: e.g. alive members of the cluster, leader of the cluster, roles of the member, lock owner
 
-Q. What is the meaning of "wait-free"?
+Q. What is the meaning of "wait-free"? Why is Zookeeper "wait-free"?
 
 A non-blocking algorithm is lock-free if there is guaranteed system-wide progress, and wait-free if there is also guaranteed **per-thread progress**.
 
 Ref: https://en.wikipedia.org/wiki/Non-blocking_algorithm
+
+
 
 Q. Why is Zookeeper implemented using a pipelined architecture? What is a pipelined architecture?
 
@@ -128,9 +151,15 @@ Q. One use of Zookeeper is as a fault-tolerant lock service (see the section "Si
 
 Q. Why is *zxid* needed?
 
+* When the replica receives a read request from the client, the replica does not know whether its log contains the last write of the client if the replica does know the *zxid*. So what the replica can do is return the data immediately.
+* The client will send the write request to the leader. The leader will return after the write is commited by majority. Thus, some of the replicas may lag behind and the write is not yet included into their logs.
+* The client can read data from any replica for performance reason. So, the client can read data from a replica that is lag behind and the client can't observe the data that reflects his last write which violate the read guarantee.
+* If the client send the read request with the *zxid* to the replica, the replica can wait its log contains the write command at *zxid* index and apply this write command before return the data.
+
 ---
 
 ## Possible Future Study
 
 * How does Kafka use Zookeeper for multiple coordination tasks? Why it choose Zookeeper? What are the implementation challenges? What are the differences between the examples of primitives shown in the paper/Yahoo Message Broker and Kafka?
 * Wait-Free Synchronization: https://cs.brown.edu/~mph/Herlihy91/p124-herlihy.pdf
+* Compare with other coordination services e.g. etcd
