@@ -16,7 +16,6 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 * How to build coordination primitives using Zookeeper weaker consistency API
     * watch, sessions, notifications, write-linearizability 
 * How the system guarantees(per client of FIFO execution of requests and asynchronous-linerazability) interact
-?? Zab: a leader-based atomic broadcast protocol to guarantee that update operations satisfy linearisability 
 
 ## Strengths and Weaknesses
 
@@ -47,7 +46,7 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 1. per client of FIFO execution of requests
 2. (asynchronous-)lineraizability of all WRITE requests that change the Zookeeper state
     * this definition of linearizability is DIFFERENT from the one originally proposed by Herlihy
-        * a client is only ablue to have one outstanding operation at a time (a client is one thread)
+        * a client is only able to have one outstanding operation at a time (a client is one thread)
     * client can have multiple outstanding operations
     * READ operation: 
         * observe the last write from the same client
@@ -103,6 +102,7 @@ Simple Locks without Herd Effect:
 
 ## Zookeeper Implementation
 
+TODO
 
 ## Evaluation
 
@@ -119,13 +119,23 @@ Q. How is the configuration used for coordination?
 
 Q. What is the meaning of "wait-free"? Why is Zookeeper "wait-free"?
 
-A non-blocking algorithm is lock-free if there is guaranteed system-wide progress, and wait-free if there is also guaranteed **per-thread progress**.
+Wait-free definition: 
 
-Ref: https://en.wikipedia.org/wiki/Non-blocking_algorithm
+A wait-free implementation of a concurrent data object is one that guarantees that any process can complete any operation in a finite number of steps, regardless of the execution speeds of the other processes.
+
+Ref: https://cs.brown.edu/~mph/Herlihy91/p124-herlihy.pdf
+
+Zookeeper is wait-free because it **processes** one client's requests without needing to wait for other clients to take action. This is partially a consequence of the API: despite being designed to support client/client coordination and synchronization, **no ZooKeeper API call is defined in a way that would require one client to wait for another**.
+
+However, ZooKeeper **clients** often need to wait for each other, with watches or polling. The main effect of wait-freedom on the API is that watches are factored out from other operations. The combination of atomic test-and-set updates (e.g. file creation and writes conditional on version) with watches allows clients to synthesize more complex blocking abstractions (e.g. Section 2.4's locks and barriers).
 
 
+Q. What are the examples of not "wait-free" system?
 
-Q. Why is Zookeeper implemented using a pipelined architecture? What is a pipelined architecture?
+A system that provided a **lock acquire operation** that **waited for the current lock holder to release the lock** would not be wait-free
+
+Q. What is a pipelined architecture? Why is Zookeeper implemented using a pipelined architecture? 
+
 
 
 Q. Why *data tree*?
@@ -156,6 +166,16 @@ Q. Why is *zxid* needed?
 * The client can read data from any replica for performance reason. So, the client can read data from a replica that is lag behind and the client can't observe the data that reflects his last write which violate the read guarantee.
 * If the client send the read request with the *zxid* to the replica, the replica can wait its log contains the write command at *zxid* index and apply this write command before return the data.
 
+Q. What's the point of sessions?
+
+* to guarantee FIFO clienter order
+* keep track of each client's watch
+* to implement the ephemeral znodes by session act as a lease
+
+## TODO
+
+* Read Section 4
+
 ---
 
 ## Possible Future Study
@@ -163,3 +183,4 @@ Q. Why is *zxid* needed?
 * How does Kafka use Zookeeper for multiple coordination tasks? Why it choose Zookeeper? What are the implementation challenges? What are the differences between the examples of primitives shown in the paper/Yahoo Message Broker and Kafka?
 * Wait-Free Synchronization: https://cs.brown.edu/~mph/Herlihy91/p124-herlihy.pdf
 * Compare with other coordination services e.g. etcd
+    * https://etcd.io/docs/v3.6/learning/why/
