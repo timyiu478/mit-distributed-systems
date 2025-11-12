@@ -8,9 +8,12 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 ## Novelty
 
 * **Coordination Kernel**: Instead of implementign sepcific coordination needs on the server, Zookeepr expose an API that enables application developers to implement their own primitives.
+* High Performance
+    * key ideas: asynchronous client requests, read by any replica
 
 ## Takeaways
 
+* How to build coordination primitives using Zookeeper
 ?? How the system guarantees(per client of FIFO execution of requests and asynchronous-linerazability) interact
 ?? Zab: a leader-based atomic broadcast protocol to guarantee that update operations satisfy linearisability 
 
@@ -30,9 +33,16 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 
 1. per client of FIFO execution of requests
 2. (asynchronous-)lineraizability of all WRITE requests that change the Zookeeper state
-    * this definition of linearizability is different from the one originally proposed by Herlihy
+    * this definition of linearizability is DIFFERENT from the one originally proposed by Herlihy
         * a client is only ablue to have one outstanding operation at a time (a client is one thread)
     * client can have multiple outstanding operations
+    * READ operation: 
+        * observe the last write from the same client
+        * observe the prefix of the log from other clients
+        * => stale data
+        * no reads from the past (the prefix length never decrease)
+    * MIT DS Lecture 9 Zookeeper explains this definition in details: https://www.youtube.com/watch?v=HYTDDLo2vSE
+
 * Section 2.2 explains how these 2 guarantees interact
 
 * the ordering guarantee for the notifications:
@@ -59,13 +69,21 @@ reference: https://pdos.csail.mit.edu/6.824/papers/zookeeper.pdf
 
 ### Simple Lock
 
+![](assets/zookeeper_build_simple_lock.png)
+
 Problems:
 
 1. It suffers from the herd effect: If there are many clients waiting to acquire a lock, they will all vie for the lock when it is released even though only one client can acquire the lock.
 2. it only implements exclusive lockin.
 
+Simple Locks without Herd Effect:
 
-![](assets/zookeeper_build_simple_lock.png)
+![](assets/zookeeper_simple_lock_without_herd_effect.png)
+
+## Zookeeper Implementation
+
+
+## Evaluation
 
 
 
@@ -105,8 +123,14 @@ Q. What is the problem can arise when clients have their own communication chann
 
 Q. One use of Zookeeper is as a fault-tolerant lock service (see the section "Simple locks" on page 6). Why isn't possible for two clients to acquire the same lock? In particular, how does Zookeeper decide if a client has failed and it can give the client's locks to other clients?
 
+* The client who can acquire the lock is the one who can create the znode. Each client will try to create a znode with the **same full path** and such znode only can be created once. Since only one client can create that znode, only one client can acquire the same lock.
+* The Zookeeper decide a client has failed if the session has terminated and that znode will be deleted. So other clients create that znode again for acquiring the lock.
+
+Q. Why is *zxid* needed?
+
 ---
 
 ## Possible Future Study
 
-* How does Kafka use Zookeeper for multiple coordination tasks? Why it choose Zookeeper? What are the implementation challenges? What are the differences between the examples of primitives shown in the paper and Kafka?
+* How does Kafka use Zookeeper for multiple coordination tasks? Why it choose Zookeeper? What are the implementation challenges? What are the differences between the examples of primitives shown in the paper/Yahoo Message Broker and Kafka?
+* Wait-Free Synchronization: https://cs.brown.edu/~mph/Herlihy91/p124-herlihy.pdf
