@@ -257,6 +257,8 @@ Q. The difference between the RequestVote RPC arguments and the AppendEntries RP
 * The *lastLogIndex/Term* is the candidate/requestvote request sender's last log index/term.
 * The *prevLogIndex/Term* is the follower's the log index/term immediate before the start log index of the new entries sent by the leader.
 
+Q. Why the step 7 in Figure 13 dictates that the Raft log covered by the snapshot must be discarded?
+
 
 
 ---
