@@ -259,7 +259,11 @@ Q. The difference between the RequestVote RPC arguments and the AppendEntries RP
 
 Q. Why the step 7 in Figure 13 dictates that the Raft log covered by the snapshot must be discarded?
 
+Q. Any problem that writing snapshot take longer than the election timeout?
 
+* Assume the server only has 1 CPU.
+* Leader can take most of the time on writing the snapshot and can't sending heartbeat to followers on time (write can block the other threads because of sychronous I/O). Thus, the leader can't maintain his leader role.
+* Same as the follower, the follower may not be able to handle the heartbeat on time and the follower will start a new term even if the heartbeat was received before election timeout.
 
 ---
 

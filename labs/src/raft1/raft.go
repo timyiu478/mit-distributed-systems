@@ -172,9 +172,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	
+	indexInLog := index - rf.LastIncludedIndex - 1
 
-	rf.LastIncludedTerm  = rf.Log[index - rf.LastIncludedIndex - 1].Term
-	trimedLog := rf.Log[index - rf.LastIncludedIndex:]
+	if indexInLog < 0 || indexInLog >= len(rf.Log) {
+		DPrintf(fmt.Sprintf("Server %d: invalid Snapshot index %d", rf.me, index))
+		return
+	}
+
+	rf.LastIncludedTerm  = rf.Log[indexInLog].Term
+	trimedLog := rf.Log[indexInLog + 1:]
 	rf.LastIncludedIndex = index
 	rf.snapshot = snapshot
 	
@@ -274,8 +281,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// least as up-to-date as receiver’s log, grant vote
 	// See the section 5.4.1 of the paper for the definition of "up-to-date"
 	lastLogIndex := len(rf.Log) - 1
-	lastLogTerm  := rf.Log[lastLogIndex].Term
-	upToDate := (args.LastLogTerm > lastLogTerm) || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex)
+	realLastLogIndex := lastLogIndex + rf.LastIncludedIndex
+	lastLogTerm  := rf.LastIncludedTerm
+	if lastLogIndex >= 0 {
+		lastLogTerm  = rf.Log[lastLogIndex].Term
+	}
+	upToDate := (args.LastLogTerm > lastLogTerm) || (lastLogTerm == args.LastLogTerm && realLastLogIndex <= args.LastLogIndex)
 	if (rf.VoteIdFor == -1 || rf.VoteIdFor == args.CandidateId) && upToDate {
 		// vote for first valid candidate 
 		rf.VoteIdFor = args.CandidateId
@@ -381,22 +392,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	lastLogIndex := len(rf.Log) - 1
+	if lastLogIndex < 0 {
+		lastLogIndex = rf.LastIncludedIndex
+	}
+	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	if args.PrevLogIndex > lastLogIndex {
-		reply.XLen = len(rf.Log)
+	if prevLogIndex > lastLogIndex {
+		reply.XLen = len(rf.Log) + rf.LastIncludedIndex + 1
 
-		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > lastLogIndex and set XLen to %d", rf.me, reply.XLen))
+		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > realLastLogIndex and set XLen to %d", rf.me, reply.XLen))
 
 		return
-	} else if args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
-		reply.XTerm = rf.Log[args.PrevLogIndex].Term
+	} else if  {
+	}
+	} else if args.PrevLogTerm != rf.Log[prevLogIndex].Term {
+		reply.XTerm = rf.Log[prevLogIndex].Term
 
 		// search for the first index that its entry term == reply.XTerm
 		// by searching the last index that its entry term != reply.XTerm 
 		reply.XIndex = 1
-		for i := args.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
-			if rf.Log[i].Term != rf.Log[args.PrevLogIndex].Term {
+		for i := prevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
+			if rf.Log[i].Term != rf.Log[prevLogIndex].Term {
 				reply.XIndex = i + 1
 				break
 			}
@@ -451,20 +468,40 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
+	// ignore an InstallSnapshot if the recipient is already ahead of that snapshot
 	if args.LastIncludedIndex <= rf.LastIncludedIndex {
 		return
 	}
 
-	trimedLog := rf.Log[args.LastIncludedIndex - rf.LastIncludedIndex:]
-	rf.Log = make([]Entry, len(trimedLog))
-	copy(rf.Log, trimedLog)
+	indexInLog := args.LastIncludedIndex - rf.LastIncludedIndex
+	resetState := false
+
+	if indexInLog + 1 < len(rf.Log) {
+		trimedLog := rf.Log[indexInLog + 1:]
+		rf.Log = make([]Entry, len(trimedLog))
+		copy(rf.Log, trimedLog)
+		
+		resetState = true
+	} else {
+		rf.Log = make([]Entry, 0)
+	}
 
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
 	rf.snapshot = args.Data
-	
+
+	// save new log and snapshot
 	rf.persist()
 
+	if resetState {
+		applyMsg := raftapi.ApplyMsg {
+			SnapshotValid: true,
+			Snapshot: rf.snapshot,
+			SnapshotTerm: rf.LastIncludedTerm,
+			SnapshotIndex: rf.LastIncludedIndex,
+		}
+		rf.applyCh <- applyMsg
+	}
 }
 
 
@@ -757,6 +794,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 				entries = make([]Entry, len(subLog))
 				copy(entries, subLog)
 			}
+			// TODO: send Install RPC if 
 
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.Log[prevLogIndex].Term
@@ -811,6 +849,7 @@ func (rf *Raft) committedLogHandler() {
 		}
 
 		// Send each newly committed entry on applyCh on each peer
+		// TODO: finx log index
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
@@ -851,7 +890,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
 	rf.matchIndex = make([]int, len(peers), len(peers))
-	rf.Log = make([]Entry, 1, len(peers)) // rf.Log[0] is dummy entry
+	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
 	
 	rf.appendEntriesReplyCh = make(chan AppendEntriesReply, 2 * len(rf.peers))
@@ -861,12 +900,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
 
-	// init rf.Log[0]
-	rf.Log[0].Term = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.snapshot = persister.ReadSnapshot()
+	// apply snapshot
+	if rf.snapshot {
+		applyMsg := raftapi.ApplyMsg {
+			SnapshotValid: true,
+			Snapshot: rf.snapshot,
+			SnapshotTerm: rf.LastIncludedTerm,
+			SnapshotIndex: rf.LastIncludedIndex,
+		}
+		rf.applyCh <- applyMsg
+	}
+	
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
