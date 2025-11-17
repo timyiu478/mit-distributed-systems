@@ -1,7 +1,7 @@
 ---
 title: "Principles of Computer System Design An Introduction - Chapter 9"
 description: ""
-tags: ["Distributed Transaction", "Two-Phase Locking"]
+tags: ["Distributed Transaction", "Atomicity", "Two-Phase Locking"]
 reference: https://ocw.mit.edu/courses/res-6-004-principles-of-computer-system-design-an-introduction-spring-2009/resources/atomicity_open_5_0/
 ---
 
@@ -20,22 +20,30 @@ reference: https://ocw.mit.edu/courses/res-6-004-principles-of-computer-system-d
 Goal: **Application Independence**. We want to be able to make an argument for correctness of the mechanism that provides before-or-after atomicity without getting into the question of whether or not the application using the mechanism is correct. 
 
 Correctness concept: coordniation among concurrent actions can be considered to be correct if **every result** is guaranteed to be one that could have been obtained by some **purely serial application** of those same actions.
+    * purely serial application: the application that running with 1 thread
+
+The before-or-after atomicity has the effect of serializing the actions, so it follows that before-or-after atomicity guarantees correctness of coordination.
+
+**External Time Consistency**: if there is any external evidence (such as a printed receipt) that before-or-after action T1 ended before before-or-after action T2 began, the serialization order of T1 and T2 inside the system should be that T1 precedes T2.
+
+**Sequential Consistency**: when the processor concurrently performs multiple instructions from the same instruction stream, the result should be as if the instructions were executed in the original order specified by the programmer.
+
+## 9.5.2 Simple Locking
 
 
-## 9.5.2
+
+## 9.5.3 Two-Phrase Locking
 
 
-## 9.5.3
+
+## 9.6.3 Multiple-Site Atomicity: Distributed Two-Phase Commit
 
 
-## 9.6.3
 
 ---
 
 ## Questions
 
-Q. Give an example of sequence coordination
-
-
+Q. What the applications require external time consistency or sequential consistency?
 
 Q. 6.033 Book. Read just these parts of Chapter 9: 9.1.5, 9.1.6, 9.5.2, 9.5.3, 9.6.3. The last two sections (on two-phase locking and distributed two-phase commit) are the most important. The Question: describe a situation where Two-Phase Locking yields higher performance than Simple Locking.
