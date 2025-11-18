@@ -126,6 +126,10 @@ Q. 6.033 Book. Read just these parts of Chapter 9: 9.1.5, 9.1.6, 9.5.2, 9.5.3, 9
 * So in most cases, the lock of *A* is not acquired.
 * Thus, other transactions can acquire the lock of *A* without waiting with transaction *Tx1* or *Tx1* can proceed without waiting other transactions.
 
+Q. In 2PC, is it possible that the worker abort after response "yes" to the PREPARE meessage from coordinator?
+
+No. The worker only response "yes" if the worker 100% can commit the transaction (e.g. no deadlock).
+
 ---
 
 ## Further Study
