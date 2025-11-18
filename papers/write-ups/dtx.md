@@ -1,8 +1,32 @@
 ---
 title: "Principles of Computer System Design An Introduction - Chapter 9"
 description: ""
-tags: ["Distributed Transaction", "Atomicity", "Two-Phase Locking"]
+tags: ["Distributed Transaction", "Atomicity", "Two-Phase Locking", "Two-Phase Commit"]
 reference: https://ocw.mit.edu/courses/res-6-004-principles-of-computer-system-design-an-introduction-spring-2009/resources/atomicity_open_5_0/
+---
+
+## Key Problem
+
+We want to support cross-machine atomic operations.
+
+For example, we want the transfer 1 dollar amount from x to y. The *x* account balance is stored in kv-store 1 and the *y* account balance is store in kv-store 2.
+
+```
+Client                             kv-store 1                            kv-store 2
+----------------------------------------------------------------------------------
+transdfer(x, y, 1)
+|
+----------put(x, -1)------------------->
+|
+--------------------------------------------------put(y, +1)---------------->
+|
+```
+
+* We want the *transfer(x, y, 1)* with respect to failure: its operations either all success or fail
+    * = Atomic in ACID
+* We want the *transfer()* with respect to concurrency: from client perspective, the action of transfer operation is completely before-or-after another action of transfer operation or other atomic operation
+    * = Isolation in ACID
+
 ---
 
 ## 9.1.5 Before-or-After Atomicity: Coordinating Concurrent Threads
@@ -30,11 +54,44 @@ The before-or-after atomicity has the effect of serializing the actions, so it f
 
 ## 9.5.2 Simple Locking
 
+Simple locking discipline:
+
+1. each transaction must acquire a lock for every shared data object it intends to read or write before doing any actual reading and writing.
+1. it may release its locks only **after the transaction installs its last update and commits or completely restores the data and aborts**.
+
+A lock manager can enforce simple locking:
+
+1. supply its intended lock set as an argument of the begin transaction operation
+1. interpose itself on all calls to read data and to log changes
+1. intercepts the call to commit or abort at which time it auto matically releases all of the locks of the lock set
+
+The setup for showing this simple locking discipline correctly coordinates concurrent transactions:
+
+Imagine that an all-seeing outside observer maintains an ordered list to which it adds each transaction identifier as soon as the transaction reaches its lock point and removes it from the list when it begins to release its locks.
 
 
 ## 9.5.3 Two-Phrase Locking
 
+Two-phrase locking discipline:
 
+1. a transaction to acquire locks **as it proceeds**, and the transaction may read or write a data object as soon as it acquires a lock on that object
+1. the transaction may not release any locks until it passes its **lock point**.
+
+Two-phrase:
+
+1. the number of locks acquired by a transaction **monotonically increases** up to the lock point
+1. after which it **monotonically decreases**
+
+What is the lock point?
+
+* The transaction has acquired all the locks it will ever need during its entire lifetime.
+* From that point onward, the transaction will no longer acquire any new locks.
+
+Two interactions between locks and logs that require some thought:
+
+* individual transactions that abort: **restore its changed data objects** to their original values before releasing any lock for before-or-after atomicity
+* log-based recovery: 
+    * key question: **whether locks themselves are data objects for which changes should be logged**
 
 ## 9.6.3 Multiple-Site Atomicity: Distributed Two-Phase Commit
 
@@ -44,6 +101,33 @@ The before-or-after atomicity has the effect of serializing the actions, so it f
 
 ## Questions
 
-Q. What the applications require external time consistency or sequential consistency?
+Q. In two-phrase locking, why the transaction needs to hold the lock until commiting?
+
+If the transaction releases the lock immediately after the use of a data object, it is possible to have some non-serializable execution. For example,
+
+![](assets/dtx_non_serializable_example.png)
+ 
+Q. Can two-phrase locking generate deadlock?
+
+Yes, it is possible.
+
+![](assets/dtx_2pl_deadlock.png)
+
+If the transaction system can detect deadlock, the system can abort one of the transaction to unblock other waiting transactions. The client can decide to retry the aborted transaction and hope this transaction can be committed.
+
+Approaches to detect deadlock:
+
+* timeout based: abort one of the transaction if no transaction is making progress after a period of time.
+* wait-for graph
 
 Q. 6.033 Book. Read just these parts of Chapter 9: 9.1.5, 9.1.6, 9.5.2, 9.5.3, 9.6.3. The last two sections (on two-phase locking and distributed two-phase commit) are the most important. The Question: describe a situation where Two-Phase Locking yields higher performance than Simple Locking.
+
+* Transaction *Tx1*: perform the conditional read of data object *A* while the condition is rarely to be true.
+* So in most cases, the lock of *A* is not acquired.
+* Thus, other transactions can acquire the lock of *A* without waiting with transaction *Tx1* or *Tx1* can proceed without waiting other transactions.
+
+---
+
+## Further Study
+
+* Chapter 9.5.3: the interactions between locks and logs
