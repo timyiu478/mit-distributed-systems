@@ -1,7 +1,7 @@
 ---
 title: "Principles of Computer System Design An Introduction - Chapter 9"
-description: ""
-tags: ["Distributed Transaction", "Atomicity", "Two-Phase Locking", "Two-Phase Commit"]
+description: "Two Phase Commit is a well known protocol to solve atomicity problem in distributed transaction"
+tags: ["Distributed Transaction", "Atomicity", "Two-Phase Locking", "Two-Phase Commit", "Serializability"]
 reference: https://ocw.mit.edu/courses/res-6-004-principles-of-computer-system-design-an-introduction-spring-2009/resources/atomicity_open_5_0/
 ---
 
@@ -95,6 +95,16 @@ Two interactions between locks and logs that require some thought:
 
 ## 9.6.3 Multiple-Site Atomicity: Distributed Two-Phase Commit
 
+Disadvantages:
+
+* coordinator is a single point of failure
+    * if the coordinator crashes after sending prepare message but before sending commit message, the workers are left in uncertain state
+    * what the worker can do?
+        * blocking: the worker just wait for the coordinator to recover
+        * worker that response "yes" can't abort the transaction on its own because the coordinator might have already decided to commit the transaction
+    * fix: use raft to replicate the coordinator for fault-tolerance
+* coordinator and wokers need to remember the transaction state on stable storage
+    * upper bound of the performance of 2PC is the time to write to stable storage
 
 
 ---
@@ -129,6 +139,11 @@ Q. 6.033 Book. Read just these parts of Chapter 9: 9.1.5, 9.1.6, 9.5.2, 9.5.3, 9
 Q. In 2PC, is it possible that the worker abort after response "yes" to the PREPARE meessage from coordinator?
 
 No. The worker only response "yes" if the worker 100% can commit the transaction (e.g. no deadlock).
+
+Q. Raft vs 2PC
+
+* Raft solves the replicate log problem for fault-tolerance. All server maintain the same log.
+* 2PC solves the cross-machine atomic operation problem. Different workers maintain the different data objects.
 
 ---
 
