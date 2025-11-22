@@ -1,7 +1,7 @@
 ---
 title: "Practical Byzantine Fault Tolerance"
 description: "First Byzantine consensus protocol that was truly practical"
-tags: ["Byzantine Fault Tolerance", ""]
+tags: ["Byzantine Fault Tolerance"]
 reference: https://pdos.csail.mit.edu/6.824/papers/castro-practicalbft.pdf
 ---
 
@@ -38,7 +38,27 @@ Client:
 
 * Why is the view number included in the client reply? What is the problem of the replies are coming from different view?
 
+
 ### Normal-Case Operation
+
+Three phase algorithm:
+
+1. pre-prepare picks ordre of requests
+2. prepare ensures order within view
+    * order: if one non faulty replica commit message m, no non-faulty replica commit m'
+    * by *2f + 1* # of P-certificate
+3. commit ensures order across views
+    * ensure at least *f+1* non-fault replica prepared
+        * byzantine replica only send P-certificate to some non-fault replicas to trick only some non-faulty replicas to commit
+    * collecting by *2f + 1* # of C-certificate
+        * any quorum for C-certificate has at least one honest replica that has P-certificate
+        * => View Change Safety
+        * The usage of this intersected P-certificate:
+
+Replica only execute a request if it has a quorum for C-certificate.
+
+### View Change Protocol
+
 
 
 
@@ -54,14 +74,17 @@ Q. Why survive *f* number of failstop failures need *2f + 1* number of replicas?
 
 ![](assets/failstop_failure_the_need_of_qc_intersection.png)
 
-Q. How are the *pre-prepare* and *preserve* phrase used to totally order requests?
-
 Q. Does the byzantine primary can order the client meesages however it want?
 
 
 Q. Suppose that we eliminated the pre-prepare phase from the Practical BFT protocol. Instead, the primary multicasts a PREPARE,v,n,m message to the replicas, and the replicas multicast COMMIT messages and reply to the client as before. What could go wrong with this protocol? Give a short example, e.g., ``The primary sends foo, replicas 1 and 2 reply with bar...''
 
 Q. Leader election: PBFT vs Raft
+
+PBFT selects leader in deterministically but Raft doesn't
+
+Q. Can some lag-behind replicas "catch-up"?
+
 
 ---
 
@@ -71,6 +94,13 @@ Q. Leader election: PBFT vs Raft
 1. https://www.youtube.com/watch?v=S2Hqd7v6Xn4
 1. https://www.youtube.com/watch?v=Q0xYCN-rvUs
 1. https://www.youtube.com/watch?v=JEKyVMUjFPw
+
+---
+
+## Futher Study
+
+* Tendermint
+* HotStuff
 
 ---
 
