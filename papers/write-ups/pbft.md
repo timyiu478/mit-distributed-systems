@@ -151,4 +151,5 @@ Q. What will happen if the new selected primary is byzantine and it does not sen
 ## TODO
 
 * View Change Protocol
+    * probably read http://pmg.csail.mit.edu/papers/vr-revisited.pdf first would help
 * read section 5 to the end
