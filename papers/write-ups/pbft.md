@@ -19,6 +19,14 @@ First BFT protocol that provide safety without sychrony assumption and it is pra
 * PKI: all replicas know the others' public keys
 * Network: the messages can be delayed(finite unknown time), out-of-order, duplicated, or missed
 
+## Strengths & Weaknesses
+
++: Safety in asynchronous network
++: Optimal byzantine fault tolerance: *3f+1* nodes can tolerant *f* node failures
+
+-: *O(n^2)* message complexity in prepare phrase and commit phrase
+-: Does not prevent sybil attack
+
 ## Guarantees
 
 Consensus:
@@ -34,10 +42,17 @@ Client:
 
 ## Details
 
+### View
+
+* View: describe a group of replicas where 1 replica is primary and the remaining replicas are backups
+* Goal of view change: to survive failure of primary
+
 ### Client
 
 * Why is the view number included in the client reply? What is the problem of the replies are coming from different view?
+    * I think the main problem is different views -> different leaders.
 
+![](assets/pbft_client.png)
 
 ### Normal-Case Operation
 
@@ -57,10 +72,11 @@ Three phase algorithm:
 
 Replica only execute a request if it has a quorum for C-certificate.
 
+![](assets/pbft_3_phrase_protocol.png)
+
 ### View Change Protocol
 
-
-
+TODO
 
 ---
 
@@ -74,10 +90,37 @@ Q. Why survive *f* number of failstop failures need *2f + 1* number of replicas?
 
 ![](assets/failstop_failure_the_need_of_qc_intersection.png)
 
-Q. Does the byzantine primary can order the client meesages however it want?
+Q. Does the byzantine primary can order the client messages however it want?
 
+* Yes, the byzantine primary can re-order the client messages because sequence number is assigned by the primary.
+* But the backups may have some ways to judge the mapping of seq # to client request. If they think this mapping is not correct, they will NOT send prepare message.
 
 Q. Suppose that we eliminated the pre-prepare phase from the Practical BFT protocol. Instead, the primary multicasts a PREPARE,v,n,m message to the replicas, and the replicas multicast COMMIT messages and reply to the client as before. What could go wrong with this protocol? Give a short example, e.g., ``The primary sends foo, replicas 1 and 2 reply with bar...''
+
+Short concrete attack scenario (with 3f+1 = 4 replicas, f = 1):
+
+* Replicas are 0, 1, 2, 3
+* Replica 0 is the malicious primary
+* Replicas 1 and 2 are honest, replica 3 is also malicious (or simply silent)
+
+The malicious primary does the following:
+
+* Primary (0) multicasts ⟨PREPARE, v, n, request=A⟩ only to replica 1
+* Primary (0) multicasts ⟨PREPARE, v, n, request=B⟩ only to replica 2
+
+Honest replica 1:
+
+* receives ⟨PREPARE, v, n, A⟩ from primary → multicasts ⟨COMMIT, v, n, digest(A)⟩
+* collects 2f+1 = 3 matching COMMITs (itself, primary 0, malicious 3 can echo A) → commits request A for n and replies to client with result of A
+
+Honest replica 2:
+
+* receives ⟨PREPARE, v, n, B⟩ from primary → multicasts ⟨COMMIT, v, n, digest(B)⟩
+* collects 3 matching COMMITs (itself, primary 0, malicious 3 echoes B) → commits request B for n and replies to client with result of B
+
+Result:
+
+* Two honest replicas (1 and 2) have committed different requests (A vs B) for the same sequence number n in the same view v.
 
 Q. Leader election: PBFT vs Raft
 
@@ -85,6 +128,7 @@ PBFT selects leader in deterministically but Raft doesn't
 
 Q. Can some lag-behind replicas "catch-up"?
 
+Q. What will happen if the new selected primary is byzantine and it does not send *NEW-VIEW* message?
 
 ---
 
@@ -106,4 +150,5 @@ Q. Can some lag-behind replicas "catch-up"?
 
 ## TODO
 
+* View Change Protocol
 * read section 5 to the end
