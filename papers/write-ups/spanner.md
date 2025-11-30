@@ -69,15 +69,31 @@ To commit a transaction, we only need the majority agreement. =>
 * improve performance by toleranting some SLOW machine.
 * data center fault tolerance
 
+Q. What is snapshot isolation?
+
+https://dl.acm.org/doi/abs/10.1145/568271.223785
+
+Q. read-write transaction vs read-only transaction vs snapshot read
+
+Q. Why commit is inevitable once a timestamp has been chosen for both read-only transactions and snapshot reads?
+
 Q. How can the client use the "closest" replica?
 
+Q. Why MVCC(Multi-Version Concurrency Control) can let read-only transaction observes consistent snapshot(snapshot that is consistent with causality)?
 
+The system ensures if the transaction *t1* -> *t2*, then the timestamp of *t1* < the timestamp of *t2*.
 
 Q. Suppose a Spanner server's TT.now() returns correct information, but the uncertainty is large. For example, suppose the absolute time is 10:15:30, and TT.now() returns the interval [10:15:20,10:15:40]. That interval is correct in that it contains the absolute time, but the error bound is 10 seconds. See Section 3 for an explanation TT.now(). What bad effect will a large error bound have on Spanner's operation? Give a specific example.
 
 
 Q. An application example that use Spanner
 
+Social Network. Why consistency matters? A User X might want
+
+1. Remove untrustworthy friend Y.
+1. Post "The government Z is ..."
+
+and make sure user Y can't see user X's "newer" posts after user X unfriend user Y.
 
 
 ---
@@ -91,3 +107,5 @@ Q. An application example that use Spanner
 ## Others
 
 * The [CockroachDB](https://www.cockroachlabs.com/) open-source database is based on the Spanner design.
+* Presentation Video by Wilson Hsieh: https://www.usenix.org/conference/osdi12/technical-sessions/presentation/corbett
+* Distributed Systems 8.2: Google's Spanner by Martin Kleppmann: https://www.youtube.com/watch?v=oeycOVX70aE
