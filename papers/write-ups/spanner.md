@@ -127,6 +127,26 @@ and make sure user Y can't see user X's "newer" posts after user X unfriend user
 
 Q. Suppose a Spanner server's TT.now() returns correct information, but the uncertainty is large. For example, suppose the absolute time is 10:15:30, and TT.now() returns the interval [10:15:20,10:15:40]. That interval is correct in that it contains the absolute time, but the error bound is 10 seconds. See Section 3 for an explanation TT.now(). What bad effect will a large error bound have on Spanner's operation? Give a specific example.
 
+Bad effect: increase latency
+
+* read-write transaction needs to wait more time to commit => delay the execution of conflict transactions.
+* read-only transaction: 
+
+```
+T1@10:15:10: WxWyC@10:15:20               
+T2@10:15:25:                WxWyC@10:15:25
+T3@10:15:40:                                ........ wait
+```
+
+* Assume a read-only transaction *T3* reads *x* and *y*. 
+* It needs to wait a new write commit at the timestamp > 10:15:40 (= at least needs to wait 10 seconds) to obey the safe time rules for linearizability.
+
+Q. Suppose a Spanner server's TT.now()'s the uncertainty is TOO SMALL(tt.latest < absolute time). What bad effect can happen?
+
+Bad effect: break the linearizability because it does not respect the real time ordering.
+
+![](assets/spanner_clock_error_is_too_small.png)
+
 ---
 
 ## Possible Further Study
