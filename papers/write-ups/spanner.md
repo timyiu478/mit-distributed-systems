@@ -7,7 +7,8 @@ reference: https://pdos.csail.mit.edu/6.824/papers/spanner.pdf
 
 ## Novelty
 
-The first system to distribute data at global scale and support externally-consistent distributed transactions.
+* The first system to distribute data at global scale and support externally-consistent distributed transactions.
+* Read-only transaction is 10x faster than read-write transaction.
 
 ## Motivations of building spanner
 
@@ -19,10 +20,6 @@ The first system to distribute data at global scale and support externally-consi
 * Read from the local replica yield latest write
 * Support transaction across shards
 * Transaction msut be linearizable
-
-## Strengths and Weaknesses
-
-## Key Takeaways
 
 ---
 
@@ -48,6 +45,9 @@ Schema Example:
 
 ### Concurrency Control
 
+Wilson Hsieh Presentation:
+
+![](assets/spanner_wilson_hsieh_presentation.png)
 
 
 ---
@@ -73,7 +73,27 @@ To commit a transaction, we only need the majority agreement. =>
 * improve performance by toleranting some SLOW machine.
 * data center fault tolerance
 
+Q. read-write transaction vs read-only transaction vs snapshot read
+
+Timestamp:
+
+* system-provided: read-write transaction, read-only transaction
+* client-provided: snapshot read
+
+Operation:
+
+* involve write: read-write transaction
+* read-only: snapshot read, read-only transaction
+
 Q. What is snapshot isolation?
+
+Both `read x` and `read y` read the most recent version of `x` and `y` that less than the snapshot transaction timestamp
+
+![](assets/spanner_what_is_snapshot_isolation.png)
+
+Problem: What if RO TX 1 read X before the X=10 @10 is replicated to the client local replica?
+
+![](assets/spanner_safe_time.png)
 
 Q. Why one of the participant leaders act as a coordinator leader to run 2PC?
 
@@ -86,11 +106,7 @@ Q. In distributed read-write transaction, what are the locks will be replicated 
 * These locks are replicated because that they cannot be lost if the leader fails. The new leader needs know the 2PC transaction state(PREPARED) and the locks to (1) BLOCK the transactions that conflict with this prepared 2PC transaction for guarantee linearizability and (2) partial commit problem.
 * Note: Only the Paxos group leader will handle the transaction => No situation that replica 1 processes transaction 1 and replica 2 processes transaction 2
 
-Q. read-write transaction vs read-only transaction vs snapshot read
-
 Q. Why commit is inevitable once a timestamp has been chosen for both read-only transactions and snapshot reads?
-
-Q. How can the client use the "closest" replica?
 
 Q. Why MVCC(Multi-Version Concurrency Control) can help read-only transaction observes consistent snapshot(snapshot that is consistent with causality)?
 
@@ -113,9 +129,10 @@ Q. Suppose a Spanner server's TT.now() returns correct information, but the unce
 
 ---
 
-## Further Study
+## Possible Further Study
 
 * SQL’s isolation levels: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf
+* TrueTime Clock Implementation
 * Read Section 4.2.3 to the end
 
 ---
