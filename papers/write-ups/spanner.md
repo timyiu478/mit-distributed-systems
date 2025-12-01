@@ -46,6 +46,10 @@ Schema Example:
 
 ![](assets/spanner_truetime_api.png)
 
+### Concurrency Control
+
+
+
 ---
 
 ## Questions
@@ -71,7 +75,16 @@ To commit a transaction, we only need the majority agreement. =>
 
 Q. What is snapshot isolation?
 
-https://dl.acm.org/doi/abs/10.1145/568271.223785
+Q. Why one of the participant leaders act as a coordinator leader to run 2PC?
+
+* In 2PC, the coordinator is the single point of failure. If it fails, the protocol will be blocked. The replicas need to hold the locks until the coordinator come back.
+* The participant leader is one of the replica in the Paxos group. If it fails, the Paxos will elect another non-faulty replica as participant leader. Thus, the coordinator leader becomes HA.
+
+Q. In distributed read-write transaction, what are the locks will be replicated in a Paxos group? And why replicate?
+
+* The locks(their statues) that involve in the 2PC will be replicated when the leader **prepares** the 2PC transaction. The locks for other non-2PC transactions will NOT be replicated.
+* These locks are replicated because that they cannot be lost if the leader fails. The new leader needs know the 2PC transaction state(PREPARED) and the locks to (1) BLOCK the transactions that conflict with this prepared 2PC transaction for guarantee linearizability and (2) partial commit problem.
+* Note: Only the Paxos group leader will handle the transaction => No situation that replica 1 processes transaction 1 and replica 2 processes transaction 2
 
 Q. read-write transaction vs read-only transaction vs snapshot read
 
@@ -79,12 +92,13 @@ Q. Why commit is inevitable once a timestamp has been chosen for both read-only 
 
 Q. How can the client use the "closest" replica?
 
-Q. Why MVCC(Multi-Version Concurrency Control) can let read-only transaction observes consistent snapshot(snapshot that is consistent with causality)?
+Q. Why MVCC(Multi-Version Concurrency Control) can help read-only transaction observes consistent snapshot(snapshot that is consistent with causality)?
 
-The system ensures if the transaction *t1* -> *t2*, then the timestamp of *t1* < the timestamp of *t2*.
-
-Q. Suppose a Spanner server's TT.now() returns correct information, but the uncertainty is large. For example, suppose the absolute time is 10:15:30, and TT.now() returns the interval [10:15:20,10:15:40]. That interval is correct in that it contains the absolute time, but the error bound is 10 seconds. See Section 3 for an explanation TT.now(). What bad effect will a large error bound have on Spanner's operation? Give a specific example.
-
+* The system ensures if the transaction *t1* -> *t2*, then the timestamp of *t1* < the timestamp of *t2*.
+    * commit order respects global wall-time order 
+    * timestamp order repsects == global wall-time order
+    * timestamp order == commit order
+* When a read-only transaction reads a record, the version it reads is the one with the highest time-stamp that's less than the transaction's time-stamp.
 
 Q. An application example that use Spanner
 
@@ -95,12 +109,14 @@ Social Network. Why consistency matters? A User X might want
 
 and make sure user Y can't see user X's "newer" posts after user X unfriend user Y.
 
+Q. Suppose a Spanner server's TT.now() returns correct information, but the uncertainty is large. For example, suppose the absolute time is 10:15:30, and TT.now() returns the interval [10:15:20,10:15:40]. That interval is correct in that it contains the absolute time, but the error bound is 10 seconds. See Section 3 for an explanation TT.now(). What bad effect will a large error bound have on Spanner's operation? Give a specific example.
 
 ---
 
 ## Further Study
 
-* Why and How *Movedir* is used for adding or removing replicas to Paxos group: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/eurosys2006.pdf
+* SQL’s isolation levels: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf
+* Read Section 4.2.3 to the end
 
 ---
 
