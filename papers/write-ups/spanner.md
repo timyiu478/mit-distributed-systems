@@ -145,7 +145,18 @@ Q. Suppose a Spanner server's TT.now()'s the uncertainty is TOO SMALL(tt.latest 
 
 Bad effect: break the linearizability because it does not respect the real time ordering.
 
+Tx2 can't see the read-write transaction Tx1 that is finished before Tx2 started.
+
 ![](assets/spanner_clock_error_is_too_small.png)
+
+Q. Why does a read/only transaction use *TT.now().latest* as its timestamp?
+
+Suppose read-only T2 is started after read-write T1 commit. The T2 get the timestamp interval [10, 12] from TrueTime API where the real time is 11. T2 use *TT.now().latest* to guarantee T2's timestamp > T1's timestamp and T2's timestamp >= the real time 11.
+
+```
+T1:  Wx1 Prepare S=TT.now().latest=9  ... wait ... C@S
+T2:                                                         Rx@12
+```
 
 ---
 
