@@ -395,7 +395,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if lastLogIndex < 0 {
 		lastLogIndex = rf.LastIncludedIndex
 	}
-	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex
+	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex - 1
+	prevLogTerm := rf.LastIncludedTerm
+	if prevLogIndex >= 0 {
+		prevLogTerm = rf.Log[prevLogIndex].Term
+	}
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if prevLogIndex > lastLogIndex {
@@ -404,10 +408,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > realLastLogIndex and set XLen to %d", rf.me, reply.XLen))
 
 		return
-	} else if  {
-	}
-	} else if args.PrevLogTerm != rf.Log[prevLogIndex].Term {
-		reply.XTerm = rf.Log[prevLogIndex].Term
+	} else if args.PrevLogTerm != prevLogTerm {
+		reply.XTerm = prevLogTerm 
 
 		// search for the first index that its entry term == reply.XTerm
 		// by searching the last index that its entry term != reply.XTerm 
@@ -426,8 +428,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// handle Entries
 	i := 0
+
 	for ; i < len(args.Entries) && rf.killed() == false; i++ {
-		logIndex := args.PrevLogIndex + i + 1
+		logIndex := args.PrevLogIndex - rf.LastIncludedIndex + i
 		if logIndex > len(rf.Log) - 1 {
 			break
 		}
@@ -438,7 +441,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	// append any new entries not already in the log
-	logIndex := args.PrevLogIndex + i + 1
+	logIndex := args.PrevLogIndex - rf.LastIncludedIndex + i
 	if logIndex > len(rf.Log) - 1 {
 		rf.Log = append(rf.Log, args.Entries[i:]...)
 	}
@@ -476,8 +479,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	indexInLog := args.LastIncludedIndex - rf.LastIncludedIndex
 	resetState := false
 
-	if indexInLog + 1 < len(rf.Log) {
-		trimedLog := rf.Log[indexInLog + 1:]
+	if indexInLog < len(rf.Log) {
+		trimedLog := rf.Log[indexInLog:]
 		rf.Log = make([]Entry, len(trimedLog))
 		copy(rf.Log, trimedLog)
 		
@@ -600,8 +603,13 @@ func (rf *Raft) ticker() {
 
 		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("sending votes in term %d", rf.CurrentTerm), "")
 
-		lastLogIndex := len(rf.Log) - 1
-		lastLogTerm := rf.Log[lastLogIndex].Term
+		lastLogIndex := rf.LastIncludedIndex
+		lastLogTerm := rf.LastIncludedTerm
+
+		if len(rf.Log) > 0 {
+			lastLogIndex += len(rf.Log) 
+			lastLogTerm = rf.Log[len(rf.Log)-1].Term
+		}
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
@@ -663,10 +671,10 @@ func (rf *Raft) requestVoteReplyHandler() {
 
 			// reinitialize nextIndex & matchIndex after election
 			for i := 0; i < len(rf.peers); i++ {
-				rf.nextIndex[i] = len(rf.Log)
+				rf.nextIndex[i] = len(rf.Log) + rf.LastIncludedIndex + 1
 				rf.matchIndex[i] = 0
 			}
-			rf.matchIndex[rf.me] = len(rf.Log) - 1
+			rf.matchIndex[rf.me] = len(rf.Log) + rf.LastIncludedIndex
 
 			// transit to leader state	
 			rf.currentState = LeaderState
@@ -778,7 +786,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 			continue
 		}
 
-		lastLogIndex := len(rf.Log) - 1
+		lastLogIndex := len(rf.Log) + rf.LastIncludedIndex
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
 			if i == rf.me { continue }
@@ -788,16 +796,40 @@ func (rf *Raft) appendEntriesReqHandler() {
 			// Heartbeat with empty entries
 			entries := make([]Entry, 0)
 
-		  // If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+			// send Instnall RPC if rf.nextIndex[i] <= rf.LastIncludedIndex
+			if rf.nextIndex[i] <= rf.LastIncludedIndex {
+				
+				DPrintf(fmt.Sprintf("Server %d send Install RPC to peer %d in term %d", rf.me, i, rf.CurrentTerm))
+
+				go func(peer int, term int, leaderId int, lastIncludedIndex int, lastIncludedTerm int, data []byte, replyCh chan InstallSnapshotReply) {
+					args := &InstallSnapshotArgs{
+						Term: term,
+						LeaderId: leaderId,
+						LastIncludedIndex:		lastIncludedIndex,
+						LastIncludedTerm:    lastIncludedTerm,
+						Data: 	data,
+					}
+					reply := &InstallSnapshotReply{}
+					ret := rf.sendInstallSnapshot(peer, args, reply)
+					if ret && rf.killed() == false { replyCh <- *reply }
+
+				}(i, rf.CurrentTerm, rf.me, rf.LastIncludedIndex, rf.LastIncludedTerm, rf.snapshot, rf.installSnapshotReplyCh)
+
+				continue
+			}
+
+		  // else if last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			if rf.nextIndex[i] <= lastLogIndex {
-				subLog := rf.Log[rf.nextIndex[i]:]
+				subLog := rf.Log[rf.nextIndex[i] - rf.LastIncludedIndex - 1:]
 				entries = make([]Entry, len(subLog))
 				copy(entries, subLog)
 			}
-			// TODO: send Install RPC if 
 
 			prevLogIndex := rf.nextIndex[i] - 1
-			prevLogTerm := rf.Log[prevLogIndex].Term
+			prevLogTerm := rf.LastIncludedTerm
+			if prevLogIndex > rf.LastIncludedIndex {
+				prevLogTerm = rf.Log[prevLogIndex - rf.LastIncludedIndex - 1].Term
+			}
 
 			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int, replyCh chan AppendEntriesReply){
 				args := &AppendEntriesArgs{
@@ -849,11 +881,10 @@ func (rf *Raft) committedLogHandler() {
 		}
 
 		// Send each newly committed entry on applyCh on each peer
-		// TODO: finx log index
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
-				Command: rf.Log[i].Command,
+				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
 				CommandIndex: i,
 			}
 			rf.applyCh <- applyMsg
@@ -904,17 +935,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.snapshot = persister.ReadSnapshot()
-	// apply snapshot
-	if rf.snapshot {
-		applyMsg := raftapi.ApplyMsg {
-			SnapshotValid: true,
-			Snapshot: rf.snapshot,
-			SnapshotTerm: rf.LastIncludedTerm,
-			SnapshotIndex: rf.LastIncludedIndex,
-		}
-		rf.applyCh <- applyMsg
-	}
-	
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -929,6 +949,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start appendEntries request handler
 	go rf.appendEntriesReqHandler()
+
 
 	return rf
 }
