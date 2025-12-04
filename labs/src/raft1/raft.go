@@ -396,10 +396,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		lastLogIndex = rf.LastIncludedIndex
 	}
 	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex - 1
-	prevLogTerm := rf.LastIncludedTerm
-	if prevLogIndex >= 0 {
-		prevLogTerm = rf.Log[prevLogIndex].Term
-	}
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if prevLogIndex > lastLogIndex {
@@ -408,7 +404,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > realLastLogIndex and set XLen to %d", rf.me, reply.XLen))
 
 		return
-	} else if args.PrevLogTerm != prevLogTerm {
+	} 
+
+	prevLogTerm := rf.LastIncludedTerm
+	if prevLogIndex >= 0 {
+		prevLogTerm = rf.Log[prevLogIndex].Term
+	}
+
+	if args.PrevLogTerm != prevLogTerm {
 		reply.XTerm = prevLogTerm 
 
 		// search for the first index that its entry term == reply.XTerm
@@ -533,7 +536,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return index, term, false
 	}
 
-	index = len(rf.Log)
+	index = len(rf.Log) + rf.LastIncludedIndex + 1
 	term 	= rf.CurrentTerm
 
 	entry := Entry{Command: command, Term: term}
@@ -761,7 +764,7 @@ func (rf *Raft) appendEntriesReplyHandler() {
 					count += 1
 				}
 			}
-			if count > len(rf.peers) / 2 && rf.Log[index].Term == rf.CurrentTerm {
+			if count > len(rf.peers) / 2 && rf.Log[index - rf.LastIncludedIndex - 1].Term == rf.CurrentTerm {
 				// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
 
 				DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
