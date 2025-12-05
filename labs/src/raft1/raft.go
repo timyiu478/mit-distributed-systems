@@ -144,7 +144,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var lastIncludedIndex int
 	var lastIncludedTerm int
 	var log []Entry
-	if d.Decode(&voteIdFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
+	if d.Decode(&voteIdFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil || d.Decode(&log) != nil {
 		panic("Failed to decode previously persisted state")
 	} else {
 		rf.VoteIdFor = voteIdFor
@@ -281,7 +281,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// least as up-to-date as receiver’s log, grant vote
 	// See the section 5.4.1 of the paper for the definition of "up-to-date"
 	lastLogIndex := len(rf.Log) - 1
-	realLastLogIndex := lastLogIndex + rf.LastIncludedIndex
+	realLastLogIndex := lastLogIndex + rf.LastIncludedIndex + 1
 	lastLogTerm  := rf.LastIncludedTerm
 	if lastLogIndex >= 0 {
 		lastLogTerm  = rf.Log[lastLogIndex].Term
@@ -296,6 +296,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 
 		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.VoteIdFor, rf.CurrentTerm), "")
+		DPrintf(fmt.Sprintf("Server %d: vote for %d in term %d", rf.me, args.CandidateId, rf.CurrentTerm))
 	}
 }
 
@@ -392,20 +393,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	lastLogIndex := len(rf.Log) - 1
-	if lastLogIndex < 0 {
-		lastLogIndex = rf.LastIncludedIndex
-	}
-	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex - 1
+	realLastLogIndex := lastLogIndex + rf.LastIncludedIndex + 1
 
 	// deny request if the log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	if prevLogIndex > lastLogIndex {
+	if args.PrevLogIndex > realLastLogIndex {
 		reply.XLen = len(rf.Log) + rf.LastIncludedIndex + 1
 
 		DPrintf(fmt.Sprintf("Server %d: deny AE req because args.PrevLogIndex > realLastLogIndex and set XLen to %d", rf.me, reply.XLen))
 
 		return
-	} 
+	}
 
+	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex - 1
 	prevLogTerm := rf.LastIncludedTerm
 	if prevLogIndex >= 0 {
 		prevLogTerm = rf.Log[prevLogIndex].Term
@@ -416,13 +415,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// search for the first index that its entry term == reply.XTerm
 		// by searching the last index that its entry term != reply.XTerm 
-		reply.XIndex = 1
-		for i := prevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
+		i := prevLogIndex - 1
+		for ; i >= 0 && rf.killed() == false; i-- {
 			if rf.Log[i].Term != rf.Log[prevLogIndex].Term {
-				reply.XIndex = i + 1
 				break
 			}
 		}
+		reply.XIndex = rf.LastIncludedIndex + 1 + i
 
 		DPrintf(fmt.Sprintf("Server %d: deny AE req because terms are different and set XTerm to %d and XIndex to %d", rf.me, reply.XTerm, reply.XIndex))
 
@@ -444,7 +443,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	// append any new entries not already in the log
-	logIndex := args.PrevLogIndex - rf.LastIncludedIndex + i
+	// TODO: check
+	logIndex := args.PrevLogIndex - rf.LastIncludedIndex + i + 1
 	if logIndex > len(rf.Log) - 1 {
 		rf.Log = append(rf.Log, args.Entries[i:]...)
 	}
@@ -453,8 +453,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// update commit index
 	if args.LeaderCommit > rf.commitIndex {
+		// TODO: check
 		rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex + len(args.Entries))
-		DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, rf.commitIndex))
+		DPrintf(fmt.Sprintf("Server %d: update commit index to %d, length of log is %d", rf.me, rf.commitIndex, len(rf.Log)))
 	}
 
 	reply.Success = true
@@ -536,15 +537,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return index, term, false
 	}
 
-	index = len(rf.Log) + rf.LastIncludedIndex + 1
 	term 	= rf.CurrentTerm
 
 	entry := Entry{Command: command, Term: term}
 
 	// append entry to local log
 	rf.Log = append(rf.Log, entry)
+	index = len(rf.Log) + rf.LastIncludedIndex
 	rf.matchIndex[rf.me] = index
 
+	DPrintf(fmt.Sprintf("Server %d received command in term %d, matchIndex is %d", rf.me, rf.CurrentTerm, index))
 
 	rf.persist()
 
@@ -669,7 +671,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 
 		// check if get majority votes
 		if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
-			rf.VoteIdFor = -1
+			rf.VoteIdFor = rf.me // Don't reset VoteIdFor. Otherwise, the leader could vote for the candidate
 			rf.voteCount = 0
 
 			// reinitialize nextIndex & matchIndex after election
@@ -682,7 +684,7 @@ func (rf *Raft) requestVoteReplyHandler() {
 			// transit to leader state	
 			rf.currentState = LeaderState
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
-			DPrintf(fmt.Sprintf("Server %d become leader in term %d", rf.me, rf.CurrentTerm))
+			DPrintf(fmt.Sprintf("Server %d become leader in term %d, matchIndex is %d, len of log is %d", rf.me, rf.CurrentTerm, rf.matchIndex[rf.me], len(rf.Log)))
 
 			rf.persist()
 		}
@@ -878,7 +880,7 @@ func (rf *Raft) committedLogHandler() {
 
 		rf.mu.Lock()
 
-		if len(rf.Log) < rf.commitIndex {
+		if len(rf.Log) + rf.LastIncludedIndex < rf.commitIndex {
 			rf.mu.Unlock()
 			continue
 		}
