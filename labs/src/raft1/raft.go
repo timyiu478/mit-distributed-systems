@@ -68,9 +68,6 @@ type Raft struct {
 
 	applyCh 							chan raftapi.ApplyMsg
 	
-	requestVoteReplyCh 		chan RequestVoteReply
-	appendEntriesReplyCh 	chan AppendEntriesReply
-	installSnapshotReplyCh 	chan InstallSnapshotReply
 }
 
 // return currentTerm and whether this server
@@ -105,6 +102,9 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	DPrintf(fmt.Sprintf("Server %d: start to persist in term %d", rf.me, rf.CurrentTerm))
+
 
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -189,6 +189,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	copy(rf.Log, trimedLog)
 
 	rf.persist()
+
+	DPrintf(fmt.Sprintf("Server %d: snapshot index %d, trimmed log length is %d, lastIncludedIndex is %d", rf.me, index, len(rf.Log), rf.LastIncludedIndex))
 }
 
 
@@ -264,6 +266,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// deny request from older term
 	if rf.CurrentTerm > args.Term { 
+		DPrintf(fmt.Sprintf("Server %d: deny request vote for %d in term %d because the request is from older term %d", rf.me, args.CandidateId, rf.CurrentTerm, args.Term))
 		return
 	}
 
@@ -297,6 +300,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("vote for %d in term %d", rf.VoteIdFor, rf.CurrentTerm), "")
 		DPrintf(fmt.Sprintf("Server %d: vote for %d in term %d", rf.me, args.CandidateId, rf.CurrentTerm))
+	} else {
+		DPrintf(fmt.Sprintf("Server %d: deny request vote for %d in term %d", rf.me, args.CandidateId, rf.CurrentTerm))
 	}
 }
 
@@ -493,12 +498,15 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.Log = make([]Entry, 0)
 	}
 
+	DPrintf(fmt.Sprintf("Server %d: install snapshot, trimmed log length is %d, lastIncludedIndex is %d", rf.me, len(rf.Log), rf.LastIncludedIndex))
+
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
 	rf.snapshot = args.Data
 
 	// save new log and snapshot
 	rf.persist()
+
 
 	if resetState {
 		applyMsg := raftapi.ApplyMsg {
@@ -568,6 +576,8 @@ func (rf *Raft) Kill() {
 
 	// close(rf.appendEntriesReplyCh)
 	// close(rf.requestVoteReplyCh)
+
+	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
 }
 
 func (rf *Raft) killed() bool {
@@ -618,7 +628,7 @@ func (rf *Raft) ticker() {
 
 		for i := 0; i < len(rf.peers) && rf.killed() == false && rf.currentState == CandidateState; i++ {
 			if i == rf.me { continue }
-			go func(term int, candId int, peer int, replyCh chan RequestVoteReply){
+			go func(term int, candId int, peer int){
 				args := &RequestVoteArgs{
 					Term: term,
 					CandidateId: candId,
@@ -628,8 +638,10 @@ func (rf *Raft) ticker() {
 				reply := &RequestVoteReply{}
 				ret := rf.sendRequestVote(peer, args, reply)
 
-				if ret && rf.killed() == false { replyCh <- *reply }
-			}(rf.CurrentTerm, rf.me, i, rf.requestVoteReplyCh)
+				if ret && rf.killed() == false { 
+					go rf.requestVoteReplyHandler(*reply)
+				}
+			}(rf.CurrentTerm, rf.me, i)
 		}
 
 		rf.mu.Unlock()
@@ -637,152 +649,141 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) requestVoteReplyHandler() {
-	for reply := range rf.requestVoteReplyCh {
-		rf.mu.Lock()
+func (rf *Raft) requestVoteReplyHandler(reply RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-		if rf.killed() {
-			rf.mu.Unlock()
-			break
+	if rf.killed() {
+		return
+	}
+
+	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
+
+	// deny reply from older term
+	if rf.CurrentTerm > reply.Term {
+		return
+	}
+
+	if reply.VoteGranted { 
+		rf.voteCount += 1 
+	// discover new term
+	} 
+	if reply.Term > rf.CurrentTerm {
+		// catch up the term
+		rf.CurrentTerm = reply.Term
+		// transit back to follower state
+		rf.VoteIdFor = -1
+		rf.voteCount = 0
+		rf.currentState = FollowerState
+		
+		rf.persist()
+	}
+
+	// check if get majority votes
+	if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
+		rf.VoteIdFor = rf.me // Don't reset VoteIdFor. Otherwise, the leader could vote for the candidate
+		rf.voteCount = 0
+
+		// reinitialize nextIndex & matchIndex after election
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = len(rf.Log) + rf.LastIncludedIndex + 1
+			rf.matchIndex[i] = 0
 		}
+		rf.matchIndex[rf.me] = len(rf.Log) + rf.LastIncludedIndex
 
-		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get RV Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d, reply voteGranted: %t", reply.Term, reply.VoteGranted))
+		// transit to leader state	
+		rf.currentState = LeaderState
+		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
+		DPrintf(fmt.Sprintf("Server %d become leader in term %d, matchIndex is %d, len of log is %d, lastIncludedIndex is %d", rf.me, rf.CurrentTerm, rf.matchIndex[rf.me], len(rf.Log), rf.LastIncludedIndex))
 
-		// deny reply from older term
-		if rf.CurrentTerm > reply.Term {
-			rf.mu.Unlock()
-			continue
-		}
-
-		if reply.VoteGranted { 
-			rf.voteCount += 1 
-		// discover new term
-		} 
-		if reply.Term > rf.CurrentTerm {
-			// catch up the term
-			rf.CurrentTerm = reply.Term
-			// transit back to follower state
-			rf.VoteIdFor = -1
-			rf.voteCount = 0
-			rf.currentState = FollowerState
-			
-			rf.persist()
-		}
-
-		// check if get majority votes
-		if rf.currentState == CandidateState && rf.voteCount > (len(rf.peers) / 2) {
-			rf.VoteIdFor = rf.me // Don't reset VoteIdFor. Otherwise, the leader could vote for the candidate
-			rf.voteCount = 0
-
-			// reinitialize nextIndex & matchIndex after election
-			for i := 0; i < len(rf.peers); i++ {
-				rf.nextIndex[i] = len(rf.Log) + rf.LastIncludedIndex + 1
-				rf.matchIndex[i] = 0
-			}
-			rf.matchIndex[rf.me] = len(rf.Log) + rf.LastIncludedIndex
-
-			// transit to leader state	
-			rf.currentState = LeaderState
-			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("become leader in term %d", rf.CurrentTerm), "")
-			DPrintf(fmt.Sprintf("Server %d become leader in term %d, matchIndex is %d, len of log is %d", rf.me, rf.CurrentTerm, rf.matchIndex[rf.me], len(rf.Log)))
-
-			rf.persist()
-		}
-
-		rf.mu.Unlock()
+		rf.persist()
 	}
 }
 
-func (rf *Raft) appendEntriesReplyHandler() {
-	for reply := range rf.appendEntriesReplyCh {
-		rf.mu.Lock()
+func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-		if rf.killed() {
-			rf.mu.Unlock()
-			break
-		}
+	if rf.killed() {
+		return
+	}
 
-		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
+	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
 
-		// deny reply from older term
-		if rf.CurrentTerm > reply.Term {
-			rf.mu.Unlock()
-			continue
-		}
+	// deny reply from older term
+	if rf.CurrentTerm > reply.Term {
+		return
+	}
 
-		// transit to follower if discover newer term
-		if reply.Term > rf.CurrentTerm {
-			rf.CurrentTerm = reply.Term
-			rf.VoteIdFor = -1
-			rf.voteCount = 0
-			rf.currentState = FollowerState
+	// transit to follower if discover newer term
+	if reply.Term > rf.CurrentTerm {
+		rf.CurrentTerm = reply.Term
+		rf.VoteIdFor = -1
+		rf.voteCount = 0
+		rf.currentState = FollowerState
 
-			rf.persist()
-		}
+		rf.persist()
+	}
 
-		if rf.currentState != LeaderState {
-			rf.mu.Unlock()
-			continue
-		}
+	if rf.currentState != LeaderState {
+		return
+	}
 
 
-		if reply.Success {
-			// update nextIndex and matchIndex for follower
-			rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
-			rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
+	if reply.Success {
+		// update nextIndex and matchIndex for follower
+		rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
+		rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
+	} else {
+		DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d, PeerID: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen, reply.PeerId))
+		// TODO: findout why this can happen
+		// when the reply.Term >= rf.currentTerm
+		if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 {
+			// normal log backtracking: decrement nextIndex by 1
+			rf.nextIndex[reply.PeerId] = max(1, reply.PrevLogIndex)
+		}  else if reply.XTerm == -1 { // log backtracking optimization
+			// follower's log is too short
+			rf.nextIndex[reply.PeerId] = reply.XLen
 		} else {
-			DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d, PeerID: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen, reply.PeerId))
-			// TODO: findout why this can happen
-			// when the reply.Term >= rf.currentTerm
-			if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 {
-				// normal log backtracking: decrement nextIndex by 1
-				rf.nextIndex[reply.PeerId] = max(1, reply.PrevLogIndex)
-			}  else if reply.XTerm == -1 { // log backtracking optimization
-				// follower's log is too short
-				rf.nextIndex[reply.PeerId] = reply.XLen
-			} else {
-				// leader does not have XTerm
-				rf.nextIndex[reply.PeerId] = reply.XIndex
+			// leader does not have XTerm
+			rf.nextIndex[reply.PeerId] = reply.XIndex
 
-				for i := reply.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
-					if rf.Log[i].Term == reply.XTerm {
-    				// leader has XTerm -> nextIndex = (index of leader's last entry for XTerm) + 1
-						rf.nextIndex[reply.PeerId] = i + 1
-						break
-					}
+			for i := reply.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
+				if rf.Log[i].Term == reply.XTerm {
+					// leader has XTerm -> nextIndex = (index of leader's last entry for XTerm) + 1
+					rf.nextIndex[reply.PeerId] = i + 1
+					break
 				}
 			}
 		}
+	}
 
-		// update commit index to N
-		// if there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N
-		// and log[N].term == currentTerm
-		// we find N in optimistic approach (believe N is close to max(rf.matchIndex))
-		index := slices.Max(rf.matchIndex)
-		for ; index > rf.commitIndex && rf.killed() == false; index-- {
-			count := 0
-			for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
-				if rf.matchIndex[i] >= index {
-					count += 1
-				}
-			}
-			if count > len(rf.peers) / 2 && rf.Log[index - rf.LastIncludedIndex - 1].Term == rf.CurrentTerm {
-				// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
-
-				DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
-
-				rf.commitIndex = index
-				break
+	// update commit index to N
+	// if there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N
+	// and log[N].term == currentTerm
+	// we find N in optimistic approach (believe N is close to max(rf.matchIndex))
+	index := slices.Max(rf.matchIndex)
+	for ; index > rf.commitIndex && rf.killed() == false; index-- {
+		count := 0
+		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
+			if rf.matchIndex[i] >= index {
+				count += 1
 			}
 		}
+		if count > len(rf.peers) / 2 && rf.Log[index - rf.LastIncludedIndex - 1].Term == rf.CurrentTerm {
+			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
 
-		rf.mu.Unlock()
+			DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
+
+			rf.commitIndex = index
+			break
+		}
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		time.Sleep(time.Duration(300) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -798,15 +799,12 @@ func (rf *Raft) appendEntriesReqHandler() {
 
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Send AE Request in term %d", rf.CurrentTerm), "")
 
-			// Heartbeat with empty entries
-			entries := make([]Entry, 0)
-
 			// send Instnall RPC if rf.nextIndex[i] <= rf.LastIncludedIndex
 			if rf.nextIndex[i] <= rf.LastIncludedIndex {
 				
 				DPrintf(fmt.Sprintf("Server %d send Install RPC to peer %d in term %d", rf.me, i, rf.CurrentTerm))
 
-				go func(peer int, term int, leaderId int, lastIncludedIndex int, lastIncludedTerm int, data []byte, replyCh chan InstallSnapshotReply) {
+				go func(peer int, term int, leaderId int, lastIncludedIndex int, lastIncludedTerm int, data []byte) {
 					args := &InstallSnapshotArgs{
 						Term: term,
 						LeaderId: leaderId,
@@ -816,12 +814,17 @@ func (rf *Raft) appendEntriesReqHandler() {
 					}
 					reply := &InstallSnapshotReply{}
 					ret := rf.sendInstallSnapshot(peer, args, reply)
-					if ret && rf.killed() == false { replyCh <- *reply }
+					if ret && rf.killed() == false { 
+						go rf.installSnapshotReplyHandler(*reply)
+					}
 
-				}(i, rf.CurrentTerm, rf.me, rf.LastIncludedIndex, rf.LastIncludedTerm, rf.snapshot, rf.installSnapshotReplyCh)
+				}(i, rf.CurrentTerm, rf.me, rf.LastIncludedIndex, rf.LastIncludedTerm, rf.snapshot)
 
 				continue
 			}
+
+			// Heartbeat with empty entries
+			entries := make([]Entry, 0)
 
 		  // else if last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			if rf.nextIndex[i] <= lastLogIndex {
@@ -836,7 +839,7 @@ func (rf *Raft) appendEntriesReqHandler() {
 				prevLogTerm = rf.Log[prevLogIndex - rf.LastIncludedIndex - 1].Term
 			}
 
-			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int, replyCh chan AppendEntriesReply){
+			go func(term int, leaderId int, prevLogIndex int, prevLogTerm int, commitIndex int, entries []Entry, peer int){
 				args := &AppendEntriesArgs{
 					Term: term,
 					LeaderId: leaderId,
@@ -847,8 +850,14 @@ func (rf *Raft) appendEntriesReqHandler() {
 				}
 				reply := &AppendEntriesReply{}
 				ret := rf.sendAppendEntries(peer, args, reply)
-				if ret && rf.killed() == false { replyCh <- *reply }
-			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i, rf.appendEntriesReplyCh)
+
+				DPrintf(fmt.Sprintf("Server %d send AE RPC to peer %d in term %d", rf.me, peer, term))
+
+				if ret && rf.killed() == false { 
+					// replyCh <- *reply 
+					go rf.appendEntriesReplyHandler(*reply)
+				}
+			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i)
 
 		}
 
@@ -856,21 +865,18 @@ func (rf *Raft) appendEntriesReqHandler() {
 	}
 }
 
-func (rf *Raft) installSnapshotReplyHandler() {
-	for reply := range rf.installSnapshotReplyCh {
-		rf.mu.Lock()
+func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer	rf.mu.Unlock()
 
-		// transit to follower if discover newer term
-		if reply.Term > rf.CurrentTerm {
-			rf.CurrentTerm = reply.Term
-			rf.VoteIdFor = -1
-			rf.voteCount = 0
-			rf.currentState = FollowerState
+	// transit to follower if discover newer term
+	if reply.Term > rf.CurrentTerm {
+		rf.CurrentTerm = reply.Term
+		rf.VoteIdFor = -1
+		rf.voteCount = 0
+		rf.currentState = FollowerState
 
-			rf.persist()
-		}
-
-		rf.mu.Unlock()
+		rf.persist()
 	}
 }
 
@@ -921,7 +927,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 800 * time.Millisecond
+	rf.electionTimeoutLowerBound = 900 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
@@ -929,10 +935,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
 	
-	rf.appendEntriesReplyCh = make(chan AppendEntriesReply, 2 * len(rf.peers))
-	rf.requestVoteReplyCh = make(chan RequestVoteReply, 2 * len(rf.peers))
-	rf.installSnapshotReplyCh = make(chan InstallSnapshotReply, len(rf.peers))
-
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
 
@@ -944,17 +946,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	// start reply handlers
-	go rf.requestVoteReplyHandler()
-	go rf.appendEntriesReplyHandler()
-	go rf.installSnapshotReplyHandler()
-
 	// start commit handlers
 	go rf.committedLogHandler()
 
 	// start appendEntries request handler
 	go rf.appendEntriesReqHandler()
-
 
 	return rf
 }
