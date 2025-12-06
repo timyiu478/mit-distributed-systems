@@ -257,7 +257,21 @@ Q. The difference between the RequestVote RPC arguments and the AppendEntries RP
 * The *lastLogIndex/Term* is the candidate/requestvote request sender's last log index/term.
 * The *prevLogIndex/Term* is the follower's the log index/term immediate before the start log index of the new entries sent by the leader.
 
+Q. Why the step 7 in Figure 13 dictates that the Raft log covered by the snapshot must be discarded?
 
+Q. Any problem that writing snapshot take longer than the election timeout?
+
+* Assume the server only has 1 CPU.
+* Leader can take most of the time on writing the snapshot and can't sending heartbeat to followers on time (write can block the other threads because of sychronous I/O). Thus, the leader can't maintain his leader role.
+* Same as the follower, the follower may not be able to handle the heartbeat on time and the follower will start a new term even if the heartbeat was received before election timeout.
+
+Q. Consider this secenerio:
+
+* the follower installed a snapshot where the last included index is 3
+* the leader sends a append entries RPC where the previous index is less than the follower's last included index e.g. 1
+* and they are in the same term.
+
+What should the follower do? Is this scenerio possible? 
 
 ---
 
