@@ -190,6 +190,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.persist()
 
+	if rf.lastApplied < rf.LastIncludedIndex {
+		rf.lastApplied = rf.LastIncludedIndex
+	}
+
 	DPrintf(fmt.Sprintf("Server %d: snapshot index %d, trimmed log length is %d, lastIncludedIndex is %d", rf.me, index, len(rf.Log), rf.LastIncludedIndex))
 }
 
@@ -448,7 +452,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	// append any new entries not already in the log
-	// TODO: check
 	logIndex := args.PrevLogIndex - rf.LastIncludedIndex + i + 1
 	if logIndex > len(rf.Log) - 1 {
 		rf.Log = append(rf.Log, args.Entries[i:]...)
@@ -458,9 +461,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// update commit index
 	if args.LeaderCommit > rf.commitIndex {
-		// TODO: check
 		rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex + len(args.Entries))
 		DPrintf(fmt.Sprintf("Server %d: update commit index to %d, length of log is %d", rf.me, rf.commitIndex, len(rf.Log)))
+	} else {
+		DPrintf(fmt.Sprintf("Server %d received AE request from %d in term %d, entries length is %d", rf.me, args.LeaderId, rf.CurrentTerm, len(args.Entries)))
 	}
 
 	reply.Success = true
@@ -475,9 +479,23 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	reply.Term = rf.CurrentTerm
 
 	// deny request if term < currentTerm
-	if args.Term > rf.CurrentTerm {
+	if args.Term < rf.CurrentTerm {
 		DPrintf(fmt.Sprintf("Server %d: deny InstallSnapshot req because req.Term(%d) < rf.CurrentTerm(%d)", rf.me, args.Term, rf.CurrentTerm))
 		return
+	}
+
+	// discover new term
+	if args.Term > rf.CurrentTerm {
+		// catch up the term
+		rf.CurrentTerm = args.Term
+		// transit back to follower state
+		rf.VoteIdFor = -1
+		rf.voteCount = 0
+		rf.currentState = FollowerState
+
+		reply.Term = rf.CurrentTerm
+		
+		rf.persist()
 	}
 
 	// ignore an InstallSnapshot if the recipient is already ahead of that snapshot
@@ -486,14 +504,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	indexInLog := args.LastIncludedIndex - rf.LastIncludedIndex
-	resetState := false
 
 	if indexInLog < len(rf.Log) {
 		trimedLog := rf.Log[indexInLog:]
 		rf.Log = make([]Entry, len(trimedLog))
 		copy(rf.Log, trimedLog)
 		
-		resetState = true
 	} else {
 		rf.Log = make([]Entry, 0)
 	}
@@ -508,7 +524,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.persist()
 
 
-	if resetState {
+	if rf.lastApplied < rf.LastIncludedIndex {
+		rf.lastApplied = rf.LastIncludedIndex
+
 		applyMsg := raftapi.ApplyMsg {
 			SnapshotValid: true,
 			Snapshot: rf.snapshot,
@@ -666,8 +684,9 @@ func (rf *Raft) requestVoteReplyHandler(reply RequestVoteReply) {
 
 	if reply.VoteGranted { 
 		rf.voteCount += 1 
-	// discover new term
 	} 
+
+	// discover new term
 	if reply.Term > rf.CurrentTerm {
 		// catch up the term
 		rf.CurrentTerm = reply.Term
@@ -704,14 +723,13 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.killed() {
-		return
-	}
+	DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d, PeerID: %d, Success: %t, Term: %d} in term %d", rf.me, reply.XTerm, reply.XIndex, reply.XLen, reply.PeerId, reply.Success, reply.Term, rf.CurrentTerm))
 
 	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Get AE Reply in term %d", rf.CurrentTerm), fmt.Sprintf("reply term: %d", reply.Term))
 
 	// deny reply from older term
 	if rf.CurrentTerm > reply.Term {
+		DPrintf(fmt.Sprintf("Server %d: deny AE reply from %d because reply.Term %d < current term %d", rf.me, reply.PeerId, reply.Term, rf.CurrentTerm))
 		return
 	}
 
@@ -729,13 +747,12 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 		return
 	}
 
-
 	if reply.Success {
 		// update nextIndex and matchIndex for follower
 		rf.nextIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength + 1
 		rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
+		DPrintf(fmt.Sprintf("Server %d: update peer %d's match index to %d and next index to %d", rf.me, reply.PeerId, rf.matchIndex[reply.PeerId], rf.nextIndex[reply.PeerId]))
 	} else {
-		DPrintf(fmt.Sprintf("Server %d received AE RPC Reply: { XTerm: %d, XIndex: %d, XLen: %d, PeerID: %d}", rf.me, reply.XTerm, reply.XIndex, reply.XLen, reply.PeerId))
 		// TODO: findout why this can happen
 		// when the reply.Term >= rf.currentTerm
 		if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 {
@@ -748,8 +765,13 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 			// leader does not have XTerm
 			rf.nextIndex[reply.PeerId] = reply.XIndex
 
-			for i := reply.PrevLogIndex - 1; i >= 0 && rf.killed() == false; i-- {
-				if rf.Log[i].Term == reply.XTerm {
+			for i := reply.PrevLogIndex - 1; i >= rf.LastIncludedIndex - 1 && rf.killed() == false; i-- {
+				index := i - rf.LastIncludedIndex - 1
+				term := rf.LastIncludedTerm
+				if index >= 0 {
+					term = rf.Log[index].Term
+				}
+				if term == reply.XTerm {
 					// leader has XTerm -> nextIndex = (index of leader's last entry for XTerm) + 1
 					rf.nextIndex[reply.PeerId] = i + 1
 					break
@@ -763,14 +785,19 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 	// and log[N].term == currentTerm
 	// we find N in optimistic approach (believe N is close to max(rf.matchIndex))
 	index := slices.Max(rf.matchIndex)
-	for ; index > rf.commitIndex && rf.killed() == false; index-- {
+	for ; index >= rf.LastIncludedIndex && index > rf.commitIndex && rf.killed() == false; index-- {
 		count := 0
 		for i := 0; i < len(rf.peers) && rf.killed() == false; i++ {
 			if rf.matchIndex[i] >= index {
 				count += 1
 			}
 		}
-		if count > len(rf.peers) / 2 && rf.Log[index - rf.LastIncludedIndex - 1].Term == rf.CurrentTerm {
+		DPrintf(fmt.Sprintf("Server %d: check %d, %d", rf.me, index, rf.LastIncludedIndex))
+		logTerm := rf.LastIncludedTerm
+		if index > rf.LastIncludedIndex {
+			logTerm = rf.Log[index - rf.LastIncludedIndex - 1].Term
+		}
+		if index > rf.LastIncludedIndex && count > len(rf.peers) / 2 && logTerm == rf.CurrentTerm {
 			// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("Update commit index to %d in term %d with %d # of count", index, rf.CurrentTerm, count), "")
 
 			DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
@@ -783,7 +810,7 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(300) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -854,7 +881,6 @@ func (rf *Raft) appendEntriesReqHandler() {
 				DPrintf(fmt.Sprintf("Server %d send AE RPC to peer %d in term %d", rf.me, peer, term))
 
 				if ret && rf.killed() == false { 
-					// replyCh <- *reply 
 					go rf.appendEntriesReplyHandler(*reply)
 				}
 			}(rf.CurrentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, entries, i)
@@ -882,7 +908,7 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(10) * time.Millisecond)
+		time.Sleep(time.Duration(50) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -891,8 +917,14 @@ func (rf *Raft) committedLogHandler() {
 			continue
 		}
 
+		if rf.lastApplied < rf.LastIncludedIndex {
+			rf.lastApplied = rf.LastIncludedIndex
+		}
+
 		// Send each newly committed entry on applyCh on each peer
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
+			DPrintf(fmt.Sprintf("Server %d applies command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
+
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
 				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
@@ -900,6 +932,12 @@ func (rf *Raft) committedLogHandler() {
 			}
 			rf.applyCh <- applyMsg
 			rf.lastApplied = i
+
+			// rf.applyCh is a 1-size bounded channel
+			// if we puts more than one msg, this thread will block
+			// and the mutex lock can't release because
+			// the reader of the rf.applyCh can't catch up the sender
+			break
 		}
 
 		rf.mu.Unlock()
@@ -927,7 +965,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 900 * time.Millisecond
+	rf.electionTimeoutLowerBound = 600 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
