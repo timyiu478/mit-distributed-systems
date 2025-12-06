@@ -444,8 +444,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 
-	// close(rf.appendEntriesReplyCh)
-	// close(rf.requestVoteReplyCh)
+	close(rf.applyCh)
 }
 
 func (rf *Raft) killed() bool {
