@@ -42,9 +42,8 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		for i, server := range ck.servers {
 			if ck.leaderIdx != -1 && ck.servers[i] != server { continue }
 			ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
-			if ret == false || reply.Err == rpc.ErrWrongLeader {
+			if ret == false || reply.Err == rpc.ErrWrongLeader { 
 				ck.leaderIdx = -1
-				reply = &rpc.GetReply{}
 				continue
 			}
 			ck.leaderIdx = i
@@ -85,13 +84,9 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			if ret == false || reply.Err == rpc.ErrWrongLeader { 
 				ck.leaderIdx = -1
 			} else {
-				ck.leaderIdx = i
 				break
 			}
-			if reply.Err != rpc.ErrWrongLeader { 
-				counts[i] += 1
-			}
-			reply = &rpc.PutReply{}
+			counts[i] += 1
 		}
 		if ck.leaderIdx != -1 {
 			if counts[ck.leaderIdx] > 0 {
