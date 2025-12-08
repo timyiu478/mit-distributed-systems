@@ -2,6 +2,9 @@ package rsm
 
 import (
 	"sync"
+	"math/rand"
+	"sync/atomic"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -18,6 +21,14 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Me 				 	int
+	Id 					int64
+	Req 				any
+}
+
+type OpRes struct {
+	msg         raftapi.ApplyMsg
+	res         any
 }
 
 
@@ -41,6 +52,8 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
+	opresCh      map[int]chan OpRes
+	readerDead   int32
 }
 
 // servers[] contains the ports of the set of
@@ -64,10 +77,14 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		opresCh:      make(map[int]chan OpRes),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+
+	go rsm.Reader()
+
 	return rsm
 }
 
@@ -75,6 +92,36 @@ func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
+func (rsm *RSM) Reader() {
+	for msg := range rsm.applyCh {
+		committedOp := 	msg.Command.(Op)
+
+		if msg.CommandValid {
+			opres := rsm.sm.DoOp(committedOp.Req)
+			
+			rsm.mu.Lock()
+			ch, ok := rsm.opresCh[msg.CommandIndex]
+			rsm.mu.Unlock()
+
+			if ok {
+				ch <- OpRes{msg, opres}
+				// close channel once the submit goroutine received the opres
+				close(ch)
+			}
+		}
+	}
+
+	rsm.killReader()
+}
+
+func (rsm *RSM) killReader() {
+	atomic.StoreInt32(&rsm.readerDead, 1)
+}
+
+func (rsm *RSM) readerKilled() bool {
+	z := atomic.LoadInt32(&rsm.readerDead)
+	return z == 1
+}
 
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
@@ -86,5 +133,52 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	rsm.mu.Lock()
+
+	id := rand.Int63()
+	op := Op{Me: rsm.me, Id: id, Req: req}
+
+	index, term, isLeader := rsm.rf.Start(op)
+
+	if !isLeader {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	}
+
+  rsm.opresCh[index] = make(chan OpRes)
+
+	rsm.mu.Unlock()
+
+	for !rsm.readerKilled() {
+		t, l := rsm.rf.GetState()
+		if t != term || l != isLeader { 
+			return rpc.ErrWrongLeader, nil
+		}
+
+		rsm.mu.Lock()
+		ch := rsm.opresCh[index]
+		rsm.mu.Unlock()
+
+		select {
+			case opres := <- ch: {
+				if opres.msg.CommandValid {
+					if opres.msg.CommandIndex == index {
+						req := opres.msg.Command.(Op)
+						if req.Id == id {
+							return rpc.OK, opres.res
+						} else {
+							return rpc.ErrWrongLeader, nil
+						}
+					}
+				}
+			}
+			case <- time.After(time.Duration(20) * time.Millisecond): {
+				continue
+			}
+		}
+
+		break
+	}
+
+	return rpc.ErrWrongLeader, nil
 }
