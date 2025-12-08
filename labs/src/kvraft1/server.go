@@ -23,7 +23,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type ValueWithVersion struct {
-	value string
+	value   string
 	version rpc.Tversion
 }
 
@@ -118,7 +118,9 @@ func (kv *KVServer) killed() bool {
 func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
 	vv, ok := kv.kvs[args.Key]
+
 	if ok {
 		reply.Value = vv.value
 		reply.Version = vv.version
@@ -135,7 +137,9 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
 	vv, ok := kv.kvs[args.Key]
+
 	if ok && args.Version == vv.version {
 		vv.value = args.Value
 		vv.version += 1

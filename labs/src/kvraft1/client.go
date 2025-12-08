@@ -18,7 +18,7 @@ type Clerk struct {
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, servers: servers, leaderIdx: -1}
+	ck := &Clerk{clnt: clnt, servers: servers, leaderIdx: 0}
 	// You'll have to add code here.
 	return ck
 }
@@ -39,18 +39,15 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	reply := &rpc.GetReply{}
 
 	for {
-		for i, server := range ck.servers {
-			if ck.leaderIdx != -1 && ck.servers[i] != server { continue }
-			ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
-			if ret == false || reply.Err == rpc.ErrWrongLeader {
-				ck.leaderIdx = -1
-				reply = &rpc.GetReply{}
-				continue
-			}
-			ck.leaderIdx = i
-			return reply.Value, reply.Version, reply.Err
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
+		if ret == false || reply.Err == rpc.ErrWrongLeader {
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &rpc.GetReply{}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		return reply.Value, reply.Version, reply.Err
 	}
 
 }
@@ -78,27 +75,20 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 	counts := map[int]int{}
 	for {
-		for i, server := range ck.servers {
-			if ck.leaderIdx != -1 && ck.servers[i] != server { continue }
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
 
-			ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
-			if ret == false || reply.Err == rpc.ErrWrongLeader { 
-				ck.leaderIdx = -1
-			} else {
-				ck.leaderIdx = i
-				break
-			}
-			if reply.Err != rpc.ErrWrongLeader { 
-				counts[i] += 1
-			}
+		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+			if ret == false { counts[ck.leaderIdx] += 1 }
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
-		if ck.leaderIdx != -1 {
-			if counts[ck.leaderIdx] > 0 {
-				return rpc.ErrMaybe
-			}
-			return reply.Err
+
+		if counts[ck.leaderIdx] > 0 {
+			return rpc.ErrMaybe
 		}
-		time.Sleep(100 * time.Millisecond)
+		return reply.Err
 	}
 }

@@ -910,7 +910,7 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 
 func (rf *Raft) committedLogHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		time.Sleep(time.Duration(10) * time.Millisecond)
 
 		rf.mu.Lock()
 
@@ -967,7 +967,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 600 * time.Millisecond
+	rf.electionTimeoutLowerBound = 400 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))

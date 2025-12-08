@@ -172,7 +172,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 					}
 				}
 			}
-			case <- time.After(time.Duration(20) * time.Millisecond): {
+			case <- time.After(time.Duration(10) * time.Millisecond): {
 				continue
 			}
 		}
