@@ -2,7 +2,7 @@ package kvraft
 
 import (
 	// "log"
-	"time"
+	// "time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
@@ -44,7 +44,6 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.GetReply{}
-			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		return reply.Value, reply.Version, reply.Err
@@ -82,7 +81,6 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
-			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 

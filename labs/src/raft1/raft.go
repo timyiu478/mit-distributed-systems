@@ -67,6 +67,7 @@ type Raft struct {
 	currentState  State
 
 	applyCh 							chan raftapi.ApplyMsg
+	startCh 							chan struct{}
 	
 }
 
@@ -576,6 +577,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.persist()
 
+	// trigger appendEntriesReqHandler to send AE Req immediately
+	rf.startCh <- struct{}{}
+
 	return index, term, isLeader
 }
 
@@ -596,6 +600,7 @@ func (rf *Raft) Kill() {
 	defer rf.mu.Unlock()
 
 	close(rf.applyCh)
+	close(rf.startCh)
 
 	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
 }
@@ -812,7 +817,10 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 
 func (rf *Raft) appendEntriesReqHandler() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		select {
+			case <- rf.startCh:
+			case <- time.After(time.Duration(100) * time.Millisecond):
+		}
 
 		rf.mu.Lock()
 
@@ -974,6 +982,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers), len(peers))
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
+	rf.startCh = make(chan struct{})
 	
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
