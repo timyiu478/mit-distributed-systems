@@ -83,7 +83,11 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
 
-	go rsm.Reader()
+	go rsm.reader()
+
+	if maxraftstate > -1 {
+		go rsm.snapshotter()
+	}
 
 	return rsm
 }
@@ -92,7 +96,7 @@ func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
-func (rsm *RSM) Reader() {
+func (rsm *RSM) reader() {
 	for msg := range rsm.applyCh {
 		committedOp := 	msg.Command.(Op)
 
@@ -104,7 +108,7 @@ func (rsm *RSM) Reader() {
 			rsm.mu.Unlock()
 
 			if ok {
-				ch <- OpRes{msg, opres}
+				ch, ok <- OpRes{msg, opres}
 				// close channel once the submit goroutine received the opres
 				close(ch)
 			}
@@ -160,8 +164,8 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		rsm.mu.Unlock()
 
 		select {
-			case opres := <- ch: {
-				if opres.msg.CommandValid {
+			case opres, ok := <- ch: {
+				if ok && opres.msg.CommandValid {
 					if opres.msg.CommandIndex == index {
 						req := opres.msg.Command.(Op)
 						if req.Id == id {
@@ -177,8 +181,14 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			}
 		}
 
+		// if channel is closed inproperly or
+		// msg.CommandValid == false,
+		// the loop will be breaked
 		break
 	}
 
 	return rpc.ErrWrongLeader, nil
+}
+
+func (rsm *RSM) snapshotter() {
 }

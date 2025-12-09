@@ -68,7 +68,9 @@ type Raft struct {
 
 	applyCh 							chan raftapi.ApplyMsg
 	startCh 							chan struct{}
-	
+	commitCh 							chan struct{}
+
+	wg					  sync.WaitGroup
 }
 
 // return currentTerm and whether this server
@@ -578,7 +580,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 
 	// trigger appendEntriesReqHandler to send AE Req immediately
-	rf.startCh <- struct{}{}
+	// by signaling the handler that it has >= 1 commands to be replicated
+	if len(rf.startCh) < cap(rf.startCh) {
+		rf.startCh <- struct{}{}
+	}
 
 	return index, term, isLeader
 }
@@ -596,13 +601,17 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	close(rf.applyCh)
-	close(rf.startCh)
-
 	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
+}
+
+func (rf *Raft) closeChannel() {
+	rf.wg.Wait()
+
+	DPrintf(fmt.Sprintf("Server %d starts to close channels in term %d", rf.me, rf.CurrentTerm))
+
+	close(rf.startCh)
+	close(rf.applyCh)
+	close(rf.commitCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -611,6 +620,8 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
 		// Your code here (3A)
 		time.Sleep(time.Duration(10) * time.Millisecond)
@@ -810,16 +821,25 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 			DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
 
 			rf.commitIndex = index
+			// signal commit log handler
+			if len(rf.commitCh) < cap(rf.commitCh) {
+				rf.commitCh <- struct{}{}
+			}
+
 			break
 		}
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
 		select {
-			case <- rf.startCh:
-			case <- time.After(time.Duration(100) * time.Millisecond):
+			case _, ok := <- rf.startCh:
+				if !ok { return }
+			case <- time.After(time.Duration(200) * time.Millisecond):
+				if rf.killed() { return }
 		}
 
 		rf.mu.Lock()
@@ -917,8 +937,15 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 }
 
 func (rf *Raft) committedLogHandler() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
-		time.Sleep(time.Duration(10) * time.Millisecond)
+		select {
+			case _, ok := <- rf.commitCh:
+				if !ok { return }
+			case <- time.After(time.Duration(300) * time.Millisecond):
+				if rf.killed() { return }
+		}
 
 		rf.mu.Lock()
 
@@ -982,7 +1009,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers), len(peers))
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
-	rf.startCh = make(chan struct{})
+	rf.startCh = make(chan struct{}, 1)
+	rf.commitCh = make(chan struct{}, 1)
 	
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
@@ -993,13 +1021,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapshot = persister.ReadSnapshot()
 
 	// start ticker goroutine to start elections
+	rf.wg.Add(1)
 	go rf.ticker()
 
 	// start commit handlers
+	rf.wg.Add(1)
 	go rf.committedLogHandler()
 
 	// start appendEntries request handler
+	rf.wg.Add(1)
 	go rf.appendEntriesReqHandler()
+
+	// close channels when all goroutines are finished
+	go rf.closeChannel()
 
 	return rf
 }
