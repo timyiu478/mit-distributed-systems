@@ -72,6 +72,9 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a GetReply: rep.(rpc.GetReply)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
 		reply.Err = rpc.ErrWrongLeader
@@ -86,12 +89,14 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a PutReply: rep.(rpc.PutReply)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
-	// log.Printf("test")
 	reply.Err = rep.(rpc.PutReply).Err
 }
 
@@ -116,9 +121,6 @@ func (kv *KVServer) killed() bool {
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	vv, ok := kv.kvs[args.Key]
 
 	if ok {
@@ -135,9 +137,6 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	vv, ok := kv.kvs[args.Key]
 
 	if ok && args.Version == vv.version {
