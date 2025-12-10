@@ -1,8 +1,9 @@
 package rsm
 
 import (
+	"fmt"
+	"log"
 	"sync"
-	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -14,7 +15,16 @@ import (
 
 )
 
+const Debug = false
+
 var useRaftStateMachine bool // to plug in another raft besided raft1
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 
 type Op struct {
@@ -22,7 +32,7 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	Me 				 	int
-	Id 					int64
+	Id 					int
 	Req 				any
 }
 
@@ -53,8 +63,8 @@ type RSM struct {
 	sm           StateMachine
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
-	executedOps  map[int]OpRes // for de-duplication
 	readerDead   int32
+	seqNum       int
 }
 
 // servers[] contains the ports of the set of
@@ -79,7 +89,6 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
 		opresCh:      make(map[int]chan OpRes),
-		executedOps:  make(map[int]OpRes),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -100,12 +109,15 @@ func (rsm *RSM) Raft() raftapi.Raft {
 
 func (rsm *RSM) reader() {
 	for msg := range rsm.applyCh {
+
 		committedOp := 	msg.Command.(Op)
 
 		if msg.CommandValid {
-
+			DPrintf(fmt.Sprintf("RSM %d: reads applyMsg, commitIndex is %d", rsm.me, msg.CommandIndex))
 
 			opres := rsm.sm.DoOp(committedOp.Req)
+
+			DPrintf(fmt.Sprintf("RSM %d: did Op, commitIndex is %d", rsm.me, msg.CommandIndex))
 			
 			rsm.mu.Lock()
 			ch, ok := rsm.opresCh[msg.CommandIndex]
@@ -141,9 +153,12 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
+	DPrintf(fmt.Sprintf("RSM %d: received req", rsm.me))
+
 	rsm.mu.Lock()
 
-	id := rand.Int63()
+	id := rsm.seqNum
+	rsm.seqNum += 1
 	op := Op{Me: rsm.me, Id: id, Req: req}
 
 	index, term, isLeader := rsm.rf.Start(op)

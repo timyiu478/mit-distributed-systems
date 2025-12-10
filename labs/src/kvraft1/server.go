@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,7 @@ import (
 
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -35,6 +36,10 @@ type KVServer struct {
 	// Your definitions here.
 	mu 	 sync.Mutex
 	kvs  map[string]ValueWithVersion
+
+	dupTable map[uint64]int // duplicate table; entry per client
+	getReplys   map[uint64]rpc.GetReply
+	putReplys   map[uint64]rpc.PutReply
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -75,6 +80,16 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	seqNum := kv.dupTable[args.ClientId]
+
+	if args.SeqNum <= seqNum { 
+		DPrintf(fmt.Sprintf("Kv %d: duplicated operation, seqNum is %d", kv.me, args.SeqNum)) 
+		reply.Err = kv.getReplys[args.ClientId].Err 
+		reply.Value = kv.getReplys[args.ClientId].Value
+		reply.Version = kv.getReplys[args.ClientId].Version
+		return
+	}
+
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
 		reply.Err = rpc.ErrWrongLeader
@@ -83,6 +98,9 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	reply.Err = rep.(rpc.GetReply).Err
 	reply.Value = rep.(rpc.GetReply).Value
 	reply.Version = rep.(rpc.GetReply).Version
+
+	kv.dupTable[args.ClientId] = args.SeqNum
+	kv.getReplys[args.ClientId] = *reply
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
@@ -92,12 +110,23 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	seqNum := kv.dupTable[args.ClientId]
+
+	if args.SeqNum <= seqNum {
+		DPrintf(fmt.Sprintf("Kv %d: duplicated operation, seqNum is %d", kv.me, args.SeqNum)) 
+		reply.Err = kv.putReplys[args.ClientId].Err 
+		return
+	}
+
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
 	reply.Err = rep.(rpc.PutReply).Err
+
+	kv.dupTable[args.ClientId] = args.SeqNum
+	kv.putReplys[args.ClientId] = *reply
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -171,7 +200,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
-	kv.kvs = make(map[string]ValueWithVersion)
+	kv.kvs       = make(map[string]ValueWithVersion)
+  kv.dupTable  = make(map[uint64]int)
+	kv.getReplys = make(map[uint64]rpc.GetReply)
+	kv.putReplys = make(map[uint64]rpc.PutReply)
 
 	return []tester.IService{kv, kv.rsm.Raft()}
 }
