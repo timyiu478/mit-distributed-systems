@@ -53,6 +53,7 @@ type RSM struct {
 	sm           StateMachine
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
+	executedOps  map[int]OpRes // for de-duplication
 	readerDead   int32
 }
 
@@ -78,6 +79,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
 		opresCh:      make(map[int]chan OpRes),
+		executedOps:  make(map[int]OpRes),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -101,6 +103,8 @@ func (rsm *RSM) reader() {
 		committedOp := 	msg.Command.(Op)
 
 		if msg.CommandValid {
+
+
 			opres := rsm.sm.DoOp(committedOp.Req)
 			
 			rsm.mu.Lock()
@@ -108,7 +112,7 @@ func (rsm *RSM) reader() {
 			rsm.mu.Unlock()
 
 			if ok {
-				ch, ok <- OpRes{msg, opres}
+				ch <- OpRes{msg, opres}
 				// close channel once the submit goroutine received the opres
 				close(ch)
 			}
@@ -156,6 +160,13 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	for !rsm.readerKilled() {
 		t, l := rsm.rf.GetState()
 		if t != term || l != isLeader { 
+			go func(ch chan OpRes){
+				// unblock the reader goroutine by comsuming the value from the channel
+				// the reader goroutine will help to close the channel
+				// this handles the situation that no Submit goroutine to cosume the
+				// value passed by the reader gorountine
+				<- ch
+			}(rsm.opresCh[index])
 			return rpc.ErrWrongLeader, nil
 		}
 
