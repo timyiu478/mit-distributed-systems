@@ -93,20 +93,20 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	args := &rpc.PutArgs{Key: key, Value: value, Version: version, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.PutReply{}
 
-	count := 0
+	counts := make([]int, len(ck.servers))
 
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
 
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
-			if ret == false { count += 1 }
+			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
 			continue
 		}
 
-		if count > 0 {
+		if counts[ck.leaderIdx] > 0 {
 			return rpc.ErrMaybe
 		}
 		return reply.Err

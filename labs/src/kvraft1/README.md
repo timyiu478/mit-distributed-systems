@@ -12,4 +12,6 @@ The hashmap of channels `rsm.opresCh` is the key structure for solving this chal
 
 ## Duplicate RPC detection
 
-http://nil.csail.mit.edu/6.5840/2023/notes/l-raft-QA.txt
+It is possible that the raft log stores duplicated client requests when the server is restarted and replaying the committed log entries while receiving duplicated client requests. This is because the server's duplicated table is restoring and it does not reflect the latest sequence number the client submitted.
+
+Ref: http://nil.csail.mit.edu/6.5840/2023/notes/l-raft-QA.txt

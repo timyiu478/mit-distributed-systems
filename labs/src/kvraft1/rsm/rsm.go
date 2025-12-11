@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"6.5840/kvsrv1/rpc"
@@ -15,7 +14,7 @@ import (
 
 )
 
-const Debug = false
+const Debug = true
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
@@ -63,7 +62,7 @@ type RSM struct {
 	sm           StateMachine
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
-	readerDead   int32
+	readerDead   chan struct{}
 	seqNum       int
 }
 
@@ -89,6 +88,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
 		opresCh:      make(map[int]chan OpRes),
+		readerDead:   make(chan struct{}),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -124,23 +124,17 @@ func (rsm *RSM) reader() {
 			rsm.mu.Unlock()
 
 			if ok {
-				ch <- OpRes{msg, opres}
-				// close channel once the submit goroutine received the opres
-				close(ch)
+				// make the "subscription" not block the apply loop
+				go func(ch chan OpRes) {
+					ch <- OpRes{msg, opres}
+					// close channel once the submit goroutine received the opres
+					close(ch)
+				}(ch)
 			}
 		}
 	}
 
-	rsm.killReader()
-}
-
-func (rsm *RSM) killReader() {
-	atomic.StoreInt32(&rsm.readerDead, 1)
-}
-
-func (rsm *RSM) readerKilled() bool {
-	z := atomic.LoadInt32(&rsm.readerDead)
-	return z == 1
+	rsm.readerDead <- struct{}{}
 }
 
 // Submit a command to Raft, and wait for it to be committed.  It
@@ -168,26 +162,24 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
 
-  rsm.opresCh[index] = make(chan OpRes)
+	ch := make(chan OpRes)
+	rsm.opresCh[index] = ch
 
 	rsm.mu.Unlock()
 
-	for !rsm.readerKilled() {
+	for {
 		t, l := rsm.rf.GetState()
 		if t != term || l != isLeader { 
+			DPrintf(fmt.Sprintf("RSM %d: detected term change or leader change", rsm.me))
 			go func(ch chan OpRes){
 				// unblock the reader goroutine by comsuming the value from the channel
 				// the reader goroutine will help to close the channel
 				// this handles the situation that no Submit goroutine to cosume the
 				// value passed by the reader gorountine
 				<- ch
-			}(rsm.opresCh[index])
+			}(ch)
 			return rpc.ErrWrongLeader, nil
 		}
-
-		rsm.mu.Lock()
-		ch := rsm.opresCh[index]
-		rsm.mu.Unlock()
 
 		select {
 			case opres, ok := <- ch: {
@@ -196,24 +188,23 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 						req := opres.msg.Command.(Op)
 						if req.Id == id {
 							return rpc.OK, opres.res
-						} else {
-							return rpc.ErrWrongLeader, nil
 						}
 					}
 				}
+				return rpc.ErrWrongLeader, nil
 			}
-			case <- time.After(time.Duration(10) * time.Millisecond): {
+			case <- time.After(time.Duration(500) * time.Millisecond): {
 				continue
 			}
+			case <- rsm.readerDead: {
+				go func(ch chan OpRes){ 
+					<- ch
+				}(ch)
+				return rpc.ErrWrongLeader, nil
+			}
 		}
-
-		// if channel is closed inproperly or
-		// msg.CommandValid == false,
-		// the loop will be breaked
-		break
 	}
 
-	return rpc.ErrWrongLeader, nil
 }
 
 func (rsm *RSM) snapshotter() {
