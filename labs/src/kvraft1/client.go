@@ -1,6 +1,11 @@
 package kvraft
 
 import (
+	"fmt"
+	"time"
+	"math/rand"
+	"sync"
+
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
@@ -11,11 +16,19 @@ type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
+	leaderIdx int
+	clientId  uint64
+	seqNum    int
+	mu        sync.Mutex
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	// You'll have to add code here.
+ 	rand.Seed(time.Now().UnixNano())
+	ck.leaderIdx = 0
+	ck.seqNum = 0
+	ck.clientId  = rand.Uint64()
 	return ck
 }
 
@@ -30,9 +43,26 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
 
-	// You will have to modify this function.
-	return "", 0, ""
+	ck.seqNum += 1
+	DPrintf(fmt.Sprintf("ck %d: receive Get operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+
+	args := &rpc.GetArgs{Key: key, ClientId: ck.clientId, SeqNum: ck.seqNum}
+	reply := &rpc.GetReply{}
+
+	for {
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
+		if ret == false || reply.Err == rpc.ErrWrongLeader {
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &rpc.GetReply{}
+			continue
+		}
+		return reply.Value, reply.Version, reply.Err
+	}
+
 }
 
 // Put updates key with value only if the version in the
@@ -53,6 +83,32 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	ck.seqNum += 1
+
+	DPrintf(fmt.Sprintf("ck %d: receive Put operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+
+	args := &rpc.PutArgs{Key: key, Value: value, Version: version, ClientId: ck.clientId, SeqNum: ck.seqNum}
+	reply := &rpc.PutReply{}
+
+	counts := make([]int, len(ck.servers))
+
+	for {
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
+
+		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+			if ret == false { counts[ck.leaderIdx] += 1 }
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &rpc.PutReply{}
+			continue
+		}
+
+		if counts[ck.leaderIdx] > 0 {
+			return rpc.ErrMaybe
+		}
+		return reply.Err
+	}
 }

@@ -67,7 +67,11 @@ type Raft struct {
 	currentState  State
 
 	applyCh 							chan raftapi.ApplyMsg
-	
+	startCh 							chan struct{}
+	commitCh 							chan struct{}
+	committedCh 					chan struct{}
+
+	wg					  sync.WaitGroup
 }
 
 // return currentTerm and whether this server
@@ -412,7 +416,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		return
 	}
+	// deny request if args.PrevLogIndex < rf.LastIncludedIndex
+	// TODO
+	if args.PrevLogIndex < rf.LastIncludedIndex {
+		return
+	}
 
+	// prevLogIndex refers to the index in trimmed log
 	prevLogIndex := args.PrevLogIndex - rf.LastIncludedIndex - 1
 	prevLogTerm := rf.LastIncludedTerm
 	if prevLogIndex >= 0 {
@@ -463,6 +473,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex + len(args.Entries))
 		DPrintf(fmt.Sprintf("Server %d: update commit index to %d, length of log is %d", rf.me, rf.commitIndex, len(rf.Log)))
+		// signal commit log handler
+		if len(rf.commitCh) < cap(rf.commitCh) {
+			rf.commitCh <- struct{}{}
+		}
 	} else {
 		DPrintf(fmt.Sprintf("Server %d received AE request from %d in term %d, entries length is %d", rf.me, args.LeaderId, rf.CurrentTerm, len(args.Entries)))
 	}
@@ -576,6 +590,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.persist()
 
+	// trigger appendEntriesReqHandler to send AE Req immediately
+	// by signaling the handler that it has >= 1 commands to be replicated
+	if len(rf.startCh) < cap(rf.startCh) {
+		rf.startCh <- struct{}{}
+	}
+
 	return index, term, isLeader
 }
 
@@ -592,10 +612,29 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 
-	// close(rf.appendEntriesReplyCh)
-	// close(rf.requestVoteReplyCh)
+	// Assume Kill() will be called exactly once only
+	// Unblock the killing process
+	go func(applyCh chan raftapi.ApplyMsg, committedCh chan struct{}) {
+		for {
+			_, ok1 := <- applyCh
+			_, ok2 := <- committedCh
+			if !ok1 && !ok2 { break }
+			time.Sleep(time.Duration(100) * time.Millisecond)
+		}
+	}(rf.applyCh, rf.committedCh)
 
 	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
+}
+
+func (rf *Raft) closeChannel() {
+	rf.wg.Wait()
+
+	DPrintf(fmt.Sprintf("Server %d starts to close channels in term %d", rf.me, rf.CurrentTerm))
+
+	close(rf.startCh)
+	close(rf.applyCh)
+	close(rf.commitCh)
+	close(rf.committedCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -604,6 +643,8 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
 		// Your code here (3A)
 		time.Sleep(time.Duration(10) * time.Millisecond)
@@ -803,14 +844,22 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 			DPrintf(fmt.Sprintf("Server %d: update commit index to %d", rf.me, index))
 
 			rf.commitIndex = index
+			// signal commit log handler
+			if len(rf.commitCh) < cap(rf.commitCh) {
+				rf.commitCh <- struct{}{}
+			}
+
 			break
 		}
 	}
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		_, ok := <- rf.startCh
+		if !ok { return }
 
 		rf.mu.Lock()
 
@@ -907,8 +956,15 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 }
 
 func (rf *Raft) committedLogHandler() {
+	defer rf.wg.Done()
+
 	for rf.killed() == false {
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		// wait for all "in-flight" applyMsgs are handed 
+		// to applyCh's receiver before prepare the 
+		// next batch of applyMsgs
+		_, ok1 := <- rf.committedCh
+		_, ok2 := <- rf.commitCh
+		if !ok1 || !ok2 { return }
 
 		rf.mu.Lock()
 
@@ -921,26 +977,56 @@ func (rf *Raft) committedLogHandler() {
 			rf.lastApplied = rf.LastIncludedIndex
 		}
 
-		// Send each newly committed entry on applyCh on each peer
-		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
-			DPrintf(fmt.Sprintf("Server %d applies command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
+		msgs := make([]raftapi.ApplyMsg, 0)
 
+		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
+			DPrintf(fmt.Sprintf("Server %d makes applyMsg for command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
 				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
 				CommandIndex: i,
 			}
-			rf.applyCh <- applyMsg
-			rf.lastApplied = i
-
-			// rf.applyCh is a 1-size bounded channel
-			// if we puts more than one msg, this thread will block
-			// and the mutex lock can't release because
-			// the reader of the rf.applyCh can't catch up the sender
-			break
+			msgs = append(msgs, applyMsg)
 		}
 
+		rf.lastApplied = rf.commitIndex
+
+		// Send each newly committed entry on applyCh on each peer
+		rf.wg.Add(1)
+		go func(msgs []raftapi.ApplyMsg, applyCh chan raftapi.ApplyMsg, committedCh chan struct{}){
+			defer rf.wg.Done()
+			for _, msg := range msgs {
+				applyCh <- msg
+			}
+			committedCh <- struct{}{}
+		}(msgs, rf.applyCh, rf.committedCh)
+
 		rf.mu.Unlock()
+
+	}
+}
+
+func (rf *Raft) heartbeat() {
+	defer rf.wg.Done()
+
+	for !rf.killed() {
+		if len(rf.startCh) < cap(rf.startCh) {
+			rf.startCh <- struct{}{}
+		}
+		time.Sleep(time.Duration(100) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) signal() {
+	defer rf.wg.Done()
+
+	rf.committedCh <- struct{}{}
+
+	for !rf.killed() {
+		if len(rf.commitCh) < cap(rf.commitCh) {
+			rf.commitCh <- struct{}{}
+		}
+		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
 }
 
@@ -965,13 +1051,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.VoteIdFor = -1
-	rf.electionTimeoutLowerBound = 600 * time.Millisecond
+	rf.electionTimeoutLowerBound = 700 * time.Millisecond
 	rf.lastHeartbeat = time.Now()
 	rf.currentState = FollowerState
 	rf.nextIndex = make([]int, len(peers), len(peers))
 	rf.matchIndex = make([]int, len(peers), len(peers))
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
+	rf.startCh = make(chan struct{}, 1)
+	rf.commitCh = make(chan struct{}, 1)
+	rf.committedCh = make(chan struct{}, 1)
 	
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
@@ -982,13 +1071,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapshot = persister.ReadSnapshot()
 
 	// start ticker goroutine to start elections
+	rf.wg.Add(1)
 	go rf.ticker()
 
 	// start commit handlers
+	rf.wg.Add(1)
 	go rf.committedLogHandler()
 
 	// start appendEntries request handler
+	rf.wg.Add(1)
 	go rf.appendEntriesReqHandler()
+
+	// signal AE req handler per 100 Millisecond
+	rf.wg.Add(1)
+	go rf.heartbeat()
+
+	// signal commit log handler per 20 Millisecond
+	rf.wg.Add(1)
+	go rf.signal()
+
+	// close channels when all goroutines are finished
+	go rf.closeChannel()
 
 	return rf
 }

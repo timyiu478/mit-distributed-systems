@@ -1,7 +1,10 @@
 package rsm
 
 import (
+	"fmt"
+	"log"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -11,13 +14,30 @@ import (
 
 )
 
+const Debug = false
+
 var useRaftStateMachine bool // to plug in another raft besided raft1
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Me 				 	int
+	Id 					int
+	Req 				any
+}
+
+type OpRes struct {
+	msg         raftapi.ApplyMsg
+	res         any
 }
 
 
@@ -41,6 +61,9 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
+	opresCh      map[int]chan OpRes
+	readerDead   chan struct{}
+	seqNum       int
 }
 
 // servers[] contains the ports of the set of
@@ -64,10 +87,19 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		opresCh:      make(map[int]chan OpRes),
+		readerDead:   make(chan struct{}),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+
+	go rsm.reader()
+
+	if maxraftstate > -1 {
+		go rsm.snapshotter()
+	}
+
 	return rsm
 }
 
@@ -75,6 +107,35 @@ func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
+func (rsm *RSM) reader() {
+	for msg := range rsm.applyCh {
+
+		committedOp := 	msg.Command.(Op)
+
+		if msg.CommandValid {
+			DPrintf(fmt.Sprintf("RSM %d: reads applyMsg, commitIndex is %d", rsm.me, msg.CommandIndex))
+
+			opres := rsm.sm.DoOp(committedOp.Req)
+
+			DPrintf(fmt.Sprintf("RSM %d: did Op, commitIndex is %d", rsm.me, msg.CommandIndex))
+			
+			rsm.mu.Lock()
+			ch, ok := rsm.opresCh[msg.CommandIndex]
+			rsm.mu.Unlock()
+
+			if ok {
+				// make the "subscription" not block the apply loop
+				go func(ch chan OpRes) {
+					ch <- OpRes{msg, opres}
+					// close channel once the submit goroutine received the opres
+					close(ch)
+				}(ch)
+			}
+		}
+	}
+
+	rsm.readerDead <- struct{}{}
+}
 
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
@@ -86,5 +147,65 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	DPrintf(fmt.Sprintf("RSM %d: received req", rsm.me))
+
+	rsm.mu.Lock()
+
+	id := rsm.seqNum
+	rsm.seqNum += 1
+	op := Op{Me: rsm.me, Id: id, Req: req}
+
+	index, term, isLeader := rsm.rf.Start(op)
+
+	if !isLeader {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	}
+
+	ch := make(chan OpRes)
+	rsm.opresCh[index] = ch
+
+	rsm.mu.Unlock()
+
+	for {
+		t, l := rsm.rf.GetState()
+		if t != term || l != isLeader { 
+			DPrintf(fmt.Sprintf("RSM %d: detected term change or leader change", rsm.me))
+			go func(ch chan OpRes){
+				// unblock the reader goroutine by comsuming the value from the channel
+				// the reader goroutine will help to close the channel
+				// this handles the situation that no Submit goroutine to cosume the
+				// value passed by the reader gorountine
+				<- ch
+			}(ch)
+			return rpc.ErrWrongLeader, nil
+		}
+
+		select {
+			case opres, ok := <- ch: {
+				if ok && opres.msg.CommandValid {
+					if opres.msg.CommandIndex == index {
+						req := opres.msg.Command.(Op)
+						if req.Id == id {
+							return rpc.OK, opres.res
+						}
+					}
+				}
+				return rpc.ErrWrongLeader, nil
+			}
+			case <- time.After(time.Duration(500) * time.Millisecond): {
+				continue
+			}
+			case <- rsm.readerDead: {
+				go func(ch chan OpRes){ 
+					<- ch
+				}(ch)
+				return rpc.ErrWrongLeader, nil
+			}
+		}
+	}
+
+}
+
+func (rsm *RSM) snapshotter() {
 }
