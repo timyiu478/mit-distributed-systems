@@ -3,6 +3,7 @@ package kvraft
 import (
 	"fmt"
 	"log"
+	"bytes"
 	"sync"
 	"sync/atomic"
 
@@ -24,8 +25,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type ValueWithVersion struct {
-	value   string
-	version rpc.Tversion
+	Value   string
+	Version rpc.Tversion
 }
 
 type KVServer struct {
@@ -37,7 +38,7 @@ type KVServer struct {
 	mu 	 		 sync.Mutex
 	dupMu 	 sync.Mutex
 
-	kvs      map[string]ValueWithVersion
+	Kvs      map[string]ValueWithVersion
 
 	dupTable    map[uint64]int // duplicate table; entry per client
 
@@ -82,11 +83,32 @@ func (kv *KVServer) DoOp(req any) any {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	DPrintf(fmt.Sprintf("Kv %d: snapshot", kv.me)) 
+
+	w := new(bytes.Buffer)
+
+	e := labgob.NewEncoder(w)
+
+	e.Encode(kv.Kvs)
+
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	DPrintf(fmt.Sprintf("Kv %d: restore", kv.me))
+
+	r := bytes.NewBuffer(data)
+
+	d := labgob.NewDecoder(r)
+	
+	kvs := make(map[string]ValueWithVersion)
+
+	if d.Decode(&kvs) != nil {
+		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
+	}
+
+	kv.Kvs = kvs
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -181,11 +203,11 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 		return
 	}
 
-	vv, ok := kv.kvs[args.Key]
+	vv, ok := kv.Kvs[args.Key]
 
 	if ok {
-		reply.Value = vv.value
-		reply.Version = vv.version
+		reply.Value = vv.Value
+		reply.Version = vv.Version
 		reply.Err = rpc.OK
 	} else {
 		reply.Err = rpc.ErrNoKey
@@ -204,20 +226,20 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 		return
 	}
 
-	vv, ok := kv.kvs[args.Key]
+	vv, ok := kv.Kvs[args.Key]
 
-	if ok && args.Version == vv.version {
-		vv.value = args.Value
-		vv.version += 1
-		kv.kvs[args.Key] = vv
+	if ok && args.Version == vv.Version {
+		vv.Value = args.Value
+		vv.Version += 1
+		kv.Kvs[args.Key] = vv
 		reply.Err = rpc.OK
-	} else if ok && args.Version != vv.version {
+	} else if ok && args.Version != vv.Version {
 			reply.Err = rpc.ErrVersion
 	} else if args.Version == 0 {
 		vv := ValueWithVersion{}
-		vv.value = args.Value
-		vv.version = 1
-		kv.kvs[args.Key] = vv
+		vv.Value = args.Value
+		vv.Version = 1
+		kv.Kvs[args.Key] = vv
 		reply.Err = rpc.OK
 	} else {
 		reply.Err = rpc.ErrNoKey
@@ -238,7 +260,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
-	kv.kvs       = make(map[string]ValueWithVersion)
+	kv.Kvs       = make(map[string]ValueWithVersion)
   kv.dupTable  = make(map[uint64]int)
 	kv.getReplys = make(map[uint64]rpc.GetReply)
 	kv.putReplys = make(map[uint64]rpc.PutReply)

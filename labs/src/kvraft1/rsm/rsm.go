@@ -123,18 +123,18 @@ func (rsm *RSM) Raft() raftapi.Raft {
 func (rsm *RSM) reader() {
 	for msg := range rsm.applyCh {
 
-		committedOp := 	msg.Command.(Op)
-
 		if msg.CommandValid {
-			DPrintf(fmt.Sprintf("RSM %d: reads applyMsg, commitIndex is %d", rsm.me, msg.CommandIndex))
-		
+			DPrintf(fmt.Sprintf("RSM %d: reads committed operation, commitIndex is %d", rsm.me, msg.CommandIndex))
+
+			committedOp := 	msg.Command.(Op)
+
 			rsm.snapMu.Lock()
 			opres := rsm.sm.DoOp(committedOp.Req)
 			rsm.lastAppliedIdx = msg.CommandIndex
 			rsm.snapMu.Unlock()
 
 			DPrintf(fmt.Sprintf("RSM %d: did Op, commitIndex is %d", rsm.me, msg.CommandIndex))
-			
+
 			rsm.mu.Lock()
 			ch, ok := rsm.opresCh[msg.CommandIndex]
 			rsm.mu.Unlock()
@@ -147,6 +147,11 @@ func (rsm *RSM) reader() {
 					close(ch)
 				}(ch)
 			}
+		}
+
+		if msg.SnapshotValid {
+			DPrintf(fmt.Sprintf("RSM %d: reads installsnapshot, SnapshotIndex is %d, Snapshot term is %d", rsm.me, msg.SnapshotIndex, msg.SnapshotTerm))
+			rsm.sm.Restore(msg.Snapshot)
 		}
 	}
 
