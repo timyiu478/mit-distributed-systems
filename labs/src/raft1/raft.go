@@ -622,12 +622,13 @@ func (rf *Raft) Kill() {
 			time.Sleep(time.Duration(100) * time.Millisecond)
 		}
 	}(rf.applyCh, rf.committedCh)
+
+	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
 }
 
 func (rf *Raft) closeChannel() {
 	rf.wg.Wait()
 
-	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
 	DPrintf(fmt.Sprintf("Server %d starts to close channels in term %d", rf.me, rf.CurrentTerm))
 
 	close(rf.startCh)
