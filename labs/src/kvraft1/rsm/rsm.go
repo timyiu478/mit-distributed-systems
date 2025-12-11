@@ -14,7 +14,7 @@ import (
 
 )
 
-const Debug = false
+const Debug = true
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
@@ -64,6 +64,7 @@ type RSM struct {
 	opresCh      map[int]chan OpRes
 	readerDead   chan struct{}
 	seqNum       int
+	persister    *tester.Persister
 }
 
 // servers[] contains the ports of the set of
@@ -89,6 +90,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		sm:           sm,
 		opresCh:      make(map[int]chan OpRes),
 		readerDead:   make(chan struct{}),
+		persister:    persister,
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -98,6 +100,13 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 
 	if maxraftstate > -1 {
 		go rsm.snapshotter()
+
+		rfStateSize := persister.RaftStateSize()
+
+		if rfStateSize > 0 {
+			rfState := persister.ReadRaftState()
+			rsm.sm.Restore(rfState)
+		}
 	}
 
 	return rsm
@@ -134,7 +143,8 @@ func (rsm *RSM) reader() {
 		}
 	}
 
-	rsm.readerDead <- struct{}{}
+	DPrintf(fmt.Sprintf("RSM %d: close readerDead channel to unblock all submitters", rsm.me))
+	close(rsm.readerDead)
 }
 
 // Submit a command to Raft, and wait for it to be committed.  It
@@ -149,10 +159,20 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// your code here
 	DPrintf(fmt.Sprintf("RSM %d: received req", rsm.me))
 
+	ok := true
+	select {
+		case _, ok = <- rsm.readerDead:
+		default:
+	}
+	if !ok {
+		DPrintf(fmt.Sprintf("RSM %d: return ErrWrongLeader since reader is dead", rsm.me))
+		return rpc.ErrWrongLeader, nil
+	}
+
 	rsm.mu.Lock()
 
 	id := rsm.seqNum
-	rsm.seqNum += 1
+	rsm.seqNum++
 	op := Op{Me: rsm.me, Id: id, Req: req}
 
 	index, term, isLeader := rsm.rf.Start(op)
@@ -197,6 +217,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 				continue
 			}
 			case <- rsm.readerDead: {
+				DPrintf(fmt.Sprintf("RSM %d: return ErrWrongLeader since reader is dead", rsm.me))
 				go func(ch chan OpRes){ 
 					<- ch
 				}(ch)
@@ -208,4 +229,6 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 }
 
 func (rsm *RSM) snapshotter() {
+	for {
+	}
 }
