@@ -63,8 +63,10 @@ type RSM struct {
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
 	readerDead   chan struct{}
-	seqNum       int
 	persister    *tester.Persister
+	seqNum         int
+	lastAppliedIdx int
+	snapMu       sync.Mutex
 }
 
 // servers[] contains the ports of the set of
@@ -91,6 +93,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		opresCh:      make(map[int]chan OpRes),
 		readerDead:   make(chan struct{}),
 		persister:    persister,
+		lastAppliedIdx: 0,
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -99,13 +102,14 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 	go rsm.reader()
 
 	if maxraftstate > -1 {
+		DPrintf(fmt.Sprintf("RSM %d: starts snapsotter", rsm.me))
 		go rsm.snapshotter()
 
-		rfStateSize := persister.RaftStateSize()
+		snapshotSize := persister.SnapshotSize()
 
-		if rfStateSize > 0 {
-			rfState := persister.ReadRaftState()
-			rsm.sm.Restore(rfState)
+		if snapshotSize > 0 {
+			snapshot := persister.ReadSnapshot()
+			rsm.sm.Restore(snapshot)
 		}
 	}
 
@@ -123,8 +127,11 @@ func (rsm *RSM) reader() {
 
 		if msg.CommandValid {
 			DPrintf(fmt.Sprintf("RSM %d: reads applyMsg, commitIndex is %d", rsm.me, msg.CommandIndex))
-
+		
+			rsm.snapMu.Lock()
 			opres := rsm.sm.DoOp(committedOp.Req)
+			rsm.lastAppliedIdx = msg.CommandIndex
+			rsm.snapMu.Unlock()
 
 			DPrintf(fmt.Sprintf("RSM %d: did Op, commitIndex is %d", rsm.me, msg.CommandIndex))
 			
@@ -230,5 +237,27 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 func (rsm *RSM) snapshotter() {
 	for {
+		time.Sleep(time.Duration(100) * time.Millisecond)
+
+		ok := true
+		select {
+			case _, ok = <- rsm.readerDead:
+			default:
+		}
+		if !ok {
+			DPrintf(fmt.Sprintf("RSM %d: kill snapshotter", rsm.me))
+			return
+		}
+
+		rfStateSize := rsm.persister.RaftStateSize()
+
+		if rfStateSize <= rsm.maxraftstate { continue }
+
+		rsm.snapMu.Lock()
+		snapshot := rsm.sm.Snapshot()
+		index := rsm.lastAppliedIdx
+		rsm.snapMu.Unlock()
+
+		rsm.rf.Snapshot(index, snapshot)
 	}
 }
