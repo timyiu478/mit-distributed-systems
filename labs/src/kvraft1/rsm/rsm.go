@@ -14,7 +14,7 @@ import (
 
 )
 
-const Debug = true
+const Debug = false
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
