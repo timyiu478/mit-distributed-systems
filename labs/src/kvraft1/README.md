@@ -18,9 +18,7 @@ Ref: http://nil.csail.mit.edu/6.5840/2023/notes/l-raft-QA.txt
 
 # Known Issues
 
-Lab 4A:
+Lab 4C:
 
-```
-Test Restart and submit (reliable network)...
-Fatal: Submit didn't stop after shutdown
-```
+* Deadlock
+* History is not linearisable

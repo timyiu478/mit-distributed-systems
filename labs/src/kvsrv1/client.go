@@ -66,12 +66,14 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 
 	count := 0
 	for {
+		// Call() waits for a reply message for a timeout interval,
+		// and returns false if no reply arrives within that time)
 		ret := ck.clnt.Call(ck.server, "KVServer.Put", args, reply)
 		if ret == true { break }
 		time.Sleep(100 * time.Millisecond)
 		count += 1
 	}
-	if count > 0 {
+	if count > 0 && reply.Err == rpc.ErrVersion {
 		return rpc.ErrMaybe
 	}
 	return reply.Err

@@ -106,7 +106,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			continue
 		}
 
-		if counts[ck.leaderIdx] > 0 {
+		if counts[ck.leaderIdx] > 0 && reply.Err == rpc.ErrVersion {
 			return rpc.ErrMaybe
 		}
 		return reply.Err

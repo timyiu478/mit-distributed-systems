@@ -537,12 +537,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// save new log and snapshot
 	rf.persist()
 
-
 	if rf.lastApplied < rf.LastIncludedIndex {
 		rf.lastApplied = rf.LastIncludedIndex
 
 		applyMsg := raftapi.ApplyMsg {
 			SnapshotValid: true,
+			CommandValid: false,
 			Snapshot: rf.snapshot,
 			SnapshotTerm: rf.LastIncludedTerm,
 			SnapshotIndex: rf.LastIncludedIndex,
@@ -623,7 +623,7 @@ func (rf *Raft) Kill() {
 		}
 	}(rf.applyCh, rf.committedCh)
 
-	DPrintf(fmt.Sprintf("Server %d is killed in term %d", rf.me, rf.CurrentTerm))
+	DPrintf(fmt.Sprintf("Server %d is killed", rf.me))
 }
 
 func (rf *Raft) closeChannel() {

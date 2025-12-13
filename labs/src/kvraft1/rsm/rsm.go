@@ -63,8 +63,9 @@ type RSM struct {
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
 	readerDead   chan struct{}
-	seqNum       int
 	persister    *tester.Persister
+	seqNum            int
+	lastAppliedIndex  int
 }
 
 // servers[] contains the ports of the set of
@@ -91,23 +92,14 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		opresCh:      make(map[int]chan OpRes),
 		readerDead:   make(chan struct{}),
 		persister:    persister,
+		seqNum:           0,
+		lastAppliedIndex: 0,
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
 
 	go rsm.reader()
-
-	if maxraftstate > -1 {
-		go rsm.snapshotter()
-
-		rfStateSize := persister.RaftStateSize()
-
-		if rfStateSize > 0 {
-			rfState := persister.ReadRaftState()
-			rsm.sm.Restore(rfState)
-		}
-	}
 
 	return rsm
 }
@@ -119,15 +111,31 @@ func (rsm *RSM) Raft() raftapi.Raft {
 func (rsm *RSM) reader() {
 	for msg := range rsm.applyCh {
 
-		committedOp := 	msg.Command.(Op)
-
 		if msg.CommandValid {
-			DPrintf(fmt.Sprintf("RSM %d: reads applyMsg, commitIndex is %d", rsm.me, msg.CommandIndex))
+			DPrintf(fmt.Sprintf("RSM %d: reads committed operation, commitIndex is %d", rsm.me, msg.CommandIndex))
+			if rsm.lastAppliedIndex >= msg.CommandIndex {
+				DPrintf(fmt.Sprintf("RSM %d: ignore command because command index(%d) <= lastAppliedIndex(%d)", rsm.me, msg.CommandIndex, rsm.lastAppliedIndex))
+				continue
+			}
+
+			committedOp := msg.Command.(Op)
 
 			opres := rsm.sm.DoOp(committedOp.Req)
 
+			rsm.lastAppliedIndex = msg.CommandIndex
+
 			DPrintf(fmt.Sprintf("RSM %d: did Op, commitIndex is %d", rsm.me, msg.CommandIndex))
-			
+
+			if rsm.maxraftstate > -1 {
+				rfStateSize := rsm.persister.RaftStateSize()
+				if rfStateSize > rsm.maxraftstate {
+					snapshot := rsm.sm.Snapshot()
+					index := msg.CommandIndex
+					rsm.rf.Snapshot(msg.CommandIndex, snapshot)
+					DPrintf(fmt.Sprintf("RSM %d: snapshotted, last include index is %d", rsm.me, index))
+				}
+			}
+
 			rsm.mu.Lock()
 			ch, ok := rsm.opresCh[msg.CommandIndex]
 			rsm.mu.Unlock()
@@ -139,14 +147,22 @@ func (rsm *RSM) reader() {
 					// close channel once the submit goroutine received the opres
 					close(ch)
 				}(ch)
+				DPrintf(fmt.Sprintf("RSM %d: created a goroutine to handle the subscription, command index is %d", rsm.me, msg.CommandIndex))
 			}
+		} else if msg.SnapshotValid {
+			DPrintf(fmt.Sprintf("RSM %d: reads installsnapshot, SnapshotIndex is %d, Snapshot term is %d", rsm.me, msg.SnapshotIndex, msg.SnapshotTerm))
+			if rsm.lastAppliedIndex >= msg.SnapshotIndex {
+				DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because command index(%d) <= lastAppliedIndex(%d)", rsm.me, msg.CommandIndex, rsm.lastAppliedIndex))
+				continue
+			}
+			rsm.sm.Restore(msg.Snapshot)
+			rsm.lastAppliedIndex = msg.SnapshotIndex
 		}
 	}
 
 	DPrintf(fmt.Sprintf("RSM %d: close readerDead channel to unblock all submitters", rsm.me))
 	close(rsm.readerDead)
 }
-
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
 // try again.
@@ -179,6 +195,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	if !isLeader {
 		rsm.mu.Unlock()
+		DPrintf(fmt.Sprintf("RSM %d: i'm dead, try another server", rsm.me))
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
 
@@ -186,6 +203,8 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	rsm.opresCh[index] = ch
 
 	rsm.mu.Unlock()
+
+	DPrintf(fmt.Sprintf("RSM %d: waits for the req to be committed, req Id is %d", rsm.me, id))
 
 	for {
 		t, l := rsm.rf.GetState()
@@ -207,6 +226,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 					if opres.msg.CommandIndex == index {
 						req := opres.msg.Command.(Op)
 						if req.Id == id {
+							DPrintf(fmt.Sprintf("RSM %d: received the return value of the request, req ID is %d", rsm.me, req.Id))
 							return rpc.OK, opres.res
 						}
 					}
@@ -226,9 +246,4 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		}
 	}
 
-}
-
-func (rsm *RSM) snapshotter() {
-	for {
-	}
 }
