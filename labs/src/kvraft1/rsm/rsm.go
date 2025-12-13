@@ -101,16 +101,6 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 
 	go rsm.reader()
 
-	if maxraftstate > -1 {
-		snapshotSize := persister.SnapshotSize()
-
-		if snapshotSize > 0 {
-			snapshot := persister.ReadSnapshot()
-			DPrintf(fmt.Sprintf("RSM %d: starts to restore snapshot", rsm.me))
-			rsm.sm.Restore(snapshot)
-		}
-	}
-
 	return rsm
 }
 
