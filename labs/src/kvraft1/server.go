@@ -40,10 +40,10 @@ type KVServer struct {
 
 	Kvs      map[string]ValueWithVersion
 
-	dupTable    map[uint64]int // duplicate table; entry per client
+	DupTable    map[uint64]int // duplicate table; entry per client
 
-	getReplys   map[uint64]rpc.GetReply
-	putReplys   map[uint64]rpc.PutReply
+	GetReplys   map[uint64]rpc.GetReply
+	PutReplys   map[uint64]rpc.PutReply
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -60,18 +60,18 @@ func (kv *KVServer) DoOp(req any) any {
 		case rpc.GetArgs: {
 			reply := &rpc.GetReply{}
 			kv.get(&r, reply)
-			if kv.dupTable[r.ClientId] < r.SeqNum {
-				kv.dupTable[r.ClientId] = r.SeqNum
-				kv.getReplys[r.ClientId] = *reply
+			if kv.DupTable[r.ClientId] < r.SeqNum {
+				kv.DupTable[r.ClientId] = r.SeqNum
+				kv.GetReplys[r.ClientId] = *reply
 			}
 			return *reply
 		}
 		case rpc.PutArgs: {
 			reply := &rpc.PutReply{}
 			kv.put(&r, reply)
-			if kv.dupTable[r.ClientId] < r.SeqNum {
-				kv.dupTable[r.ClientId] = r.SeqNum
-				kv.putReplys[r.ClientId] = *reply
+			if kv.DupTable[r.ClientId] < r.SeqNum {
+				kv.DupTable[r.ClientId] = r.SeqNum
+				kv.PutReplys[r.ClientId] = *reply
 			}
 			return *reply
 		}
@@ -89,7 +89,13 @@ func (kv *KVServer) Snapshot() []byte {
 
 	e := labgob.NewEncoder(w)
 
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	e.Encode(kv.Kvs)
+	e.Encode(kv.DupTable)
+	e.Encode(kv.GetReplys)
+	e.Encode(kv.PutReplys)
 
 	return w.Bytes()
 }
@@ -102,13 +108,22 @@ func (kv *KVServer) Restore(data []byte) {
 
 	d := labgob.NewDecoder(r)
 	
-	kvs := make(map[string]ValueWithVersion)
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
 
-	if d.Decode(&kvs) != nil {
+	if d.Decode(&kv.Kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
 	}
+	if d.Decode(&kv.DupTable) != nil {
+		log.Fatalf("Kv %d: couldn't decode dupTable", kv.me)
+	}
+	if d.Decode(&kv.GetReplys) != nil {
+		log.Fatalf("Kv %d: couldn't decode getReplys", kv.me)
+	}
+	if d.Decode(&kv.PutReplys) != nil {
+		log.Fatalf("Kv %d: couldn't decode putReplys", kv.me)
+	}
 
-	kv.Kvs = kvs
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -119,15 +134,15 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	defer kv.mu.Unlock()
 
 	kv.dupMu.Lock()
-	seqNum := kv.dupTable[args.ClientId]
+	seqNum := kv.DupTable[args.ClientId]
 
 	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
 
 	if args.SeqNum <= seqNum { 
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
-		reply.Err = kv.getReplys[args.ClientId].Err 
-		reply.Value = kv.getReplys[args.ClientId].Value
-		reply.Version = kv.getReplys[args.ClientId].Version
+		reply.Err = kv.GetReplys[args.ClientId].Err 
+		reply.Value = kv.GetReplys[args.ClientId].Value
+		reply.Version = kv.GetReplys[args.ClientId].Version
 		kv.dupMu.Unlock()
 		return
 	}
@@ -152,13 +167,13 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	defer kv.mu.Unlock()
 	
 	kv.dupMu.Lock()
-	seqNum := kv.dupTable[args.ClientId]
+	seqNum := kv.DupTable[args.ClientId]
 
 	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
 
 	if args.SeqNum <= seqNum {
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
-		reply.Err = kv.putReplys[args.ClientId].Err 
+		reply.Err = kv.PutReplys[args.ClientId].Err 
 		kv.dupMu.Unlock()
 		return
 	}
@@ -194,12 +209,12 @@ func (kv *KVServer) killed() bool {
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	seqNum := kv.dupTable[args.ClientId]
+	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
-		reply.Err = kv.getReplys[args.ClientId].Err 
-		reply.Value = kv.getReplys[args.ClientId].Value
-		reply.Version = kv.getReplys[args.ClientId].Version
+		reply.Err = kv.GetReplys[args.ClientId].Err 
+		reply.Value = kv.GetReplys[args.ClientId].Value
+		reply.Version = kv.GetReplys[args.ClientId].Version
 		return
 	}
 
@@ -219,10 +234,10 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	seqNum := kv.dupTable[args.ClientId]
+	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
-		reply.Err = kv.putReplys[args.ClientId].Err 
+		reply.Err = kv.PutReplys[args.ClientId].Err 
 		return
 	}
 
@@ -258,14 +273,25 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	kv := &KVServer{me: me}
 
 
-	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
-	kv.Kvs       = make(map[string]ValueWithVersion)
-  kv.dupTable  = make(map[uint64]int)
-	kv.getReplys = make(map[uint64]rpc.GetReply)
-	kv.putReplys = make(map[uint64]rpc.PutReply)
+	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 
-	DPrintf(fmt.Sprintf("Kv %d is starting", kv.me)) 
+	DPrintf(fmt.Sprintf("Kv %d is starting", kv.me))
+
+	kv.Kvs       = make(map[string]ValueWithVersion)
+  kv.DupTable  = make(map[uint64]int)
+	kv.GetReplys = make(map[uint64]rpc.GetReply)
+	kv.PutReplys = make(map[uint64]rpc.PutReply)
+
+	if maxraftstate > -1 {
+		snapshotSize := persister.SnapshotSize()
+
+		if snapshotSize > 0 {
+			snapshot := persister.ReadSnapshot()
+			DPrintf(fmt.Sprintf("KV %d: starts to restore snapshot", kv.me))
+			kv.Restore(snapshot)
+		}
+	}
 
 	return []tester.IService{kv, kv.rsm.Raft()}
 }
