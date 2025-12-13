@@ -14,7 +14,7 @@ import (
 
 )
 
-const Debug = false
+const Debug = true
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
@@ -118,7 +118,7 @@ func (rsm *RSM) reader() {
 				continue
 			}
 
-			committedOp := 	msg.Command.(Op)
+			committedOp := msg.Command.(Op)
 
 			opres := rsm.sm.DoOp(committedOp.Req)
 
@@ -147,6 +147,7 @@ func (rsm *RSM) reader() {
 					// close channel once the submit goroutine received the opres
 					close(ch)
 				}(ch)
+				DPrintf(fmt.Sprintf("RSM %d: created a goroutine to handle the subscription, command index is %d", rsm.me, msg.CommandIndex))
 			}
 		} else if msg.SnapshotValid {
 			DPrintf(fmt.Sprintf("RSM %d: reads installsnapshot, SnapshotIndex is %d, Snapshot term is %d", rsm.me, msg.SnapshotIndex, msg.SnapshotTerm))
@@ -194,6 +195,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	if !isLeader {
 		rsm.mu.Unlock()
+		DPrintf(fmt.Sprintf("RSM %d: i'm dead, try another server", rsm.me))
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
 
@@ -201,6 +203,8 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	rsm.opresCh[index] = ch
 
 	rsm.mu.Unlock()
+
+	DPrintf(fmt.Sprintf("RSM %d: waits for the req to be committed, req Id is %d", rsm.me, id))
 
 	for {
 		t, l := rsm.rf.GetState()
@@ -222,6 +226,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 					if opres.msg.CommandIndex == index {
 						req := opres.msg.Command.(Op)
 						if req.Id == id {
+							DPrintf(fmt.Sprintf("RSM %d: received the return value of the request, req ID is %d", rsm.me, req.Id))
 							return rpc.OK, opres.res
 						}
 					}
