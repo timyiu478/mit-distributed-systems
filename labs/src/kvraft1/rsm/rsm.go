@@ -138,25 +138,26 @@ func (rsm *RSM) reader() {
 
 			rsm.mu.Lock()
 			ch, ok := rsm.opresCh[msg.CommandIndex]
-			rsm.mu.Unlock()
-
 			if ok {
-				// make the "subscription" not block the apply loop
-				go func(ch chan OpRes) {
-					ch <- OpRes{msg, opres}
-					// close channel once the submit goroutine received the opres
-					close(ch)
-				}(ch)
-				DPrintf(fmt.Sprintf("RSM %d: created a goroutine to handle the subscription, command index is %d", rsm.me, msg.CommandIndex))
+				delete(rsm.opresCh, msg.CommandIndex)
+				ch <- OpRes{msg, opres}
+				close(ch)
+				DPrintf(fmt.Sprintf("RSM %d: handled the subscription, command index is %d", rsm.me, msg.CommandIndex))
 			}
+			rsm.mu.Unlock()
 		} else if msg.SnapshotValid {
 			DPrintf(fmt.Sprintf("RSM %d: reads installsnapshot, SnapshotIndex is %d, Snapshot term is %d", rsm.me, msg.SnapshotIndex, msg.SnapshotTerm))
 			if rsm.lastAppliedIndex >= msg.SnapshotIndex {
 				DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because command index(%d) <= lastAppliedIndex(%d)", rsm.me, msg.CommandIndex, rsm.lastAppliedIndex))
 				continue
 			}
+			// t, l := rsm.rf.GetState()
+			// if t != msg.SnapshotTerm { DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because current term (%d) != snapshot term (%d)", rsm.me, t, msg.SnapshotTerm)) continue } else if l { DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because i'm leader in this term (%d)", rsm.me, t)) continue }
+			rsm.mu.Lock()
 			rsm.sm.Restore(msg.Snapshot)
 			rsm.lastAppliedIndex = msg.SnapshotIndex
+
+			rsm.mu.Unlock()
 		}
 	}
 
@@ -199,7 +200,9 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
 
-	ch := make(chan OpRes)
+	// allow reader place the single result into the channel without blocking
+	// even if the consumer (Submit) hasn't started receiving yet.
+	ch := make(chan OpRes, 1)
 	rsm.opresCh[index] = ch
 
 	rsm.mu.Unlock()
@@ -210,13 +213,13 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		t, l := rsm.rf.GetState()
 		if t != term || l != isLeader { 
 			DPrintf(fmt.Sprintf("RSM %d: detected term change or leader change", rsm.me))
-			go func(ch chan OpRes){
-				// unblock the reader goroutine by comsuming the value from the channel
-				// the reader goroutine will help to close the channel
-				// this handles the situation that no Submit goroutine to cosume the
-				// value passed by the reader gorountine
-				<- ch
-			}(ch)
+			rsm.mu.Lock()
+			c, ok := rsm.opresCh[index]
+			if ok {
+				delete(rsm.opresCh, index)
+				close(c)
+			}
+			rsm.mu.Unlock()
 			return rpc.ErrWrongLeader, nil
 		}
 
@@ -238,9 +241,13 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			}
 			case <- rsm.readerDead: {
 				DPrintf(fmt.Sprintf("RSM %d: return ErrWrongLeader since reader is dead", rsm.me))
-				go func(ch chan OpRes){ 
-					<- ch
-				}(ch)
+				rsm.mu.Lock()
+				c, ok := rsm.opresCh[index]
+				if ok {
+					delete(rsm.opresCh, index)
+					close(c)
+				}
+				rsm.mu.Unlock()
 				return rpc.ErrWrongLeader, nil
 			}
 		}

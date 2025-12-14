@@ -53,26 +53,16 @@ type KVServer struct {
 // https://go.dev/tour/methods/15
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
-	kv.dupMu.Lock()
-	defer kv.dupMu.Unlock()
 
 	switch r := req.(type) {
 		case rpc.GetArgs: {
 			reply := &rpc.GetReply{}
 			kv.get(&r, reply)
-			if kv.DupTable[r.ClientId] < r.SeqNum {
-				kv.DupTable[r.ClientId] = r.SeqNum
-				kv.GetReplys[r.ClientId] = *reply
-			}
 			return *reply
 		}
 		case rpc.PutArgs: {
 			reply := &rpc.PutReply{}
 			kv.put(&r, reply)
-			if kv.DupTable[r.ClientId] < r.SeqNum {
-				kv.DupTable[r.ClientId] = r.SeqNum
-				kv.PutReplys[r.ClientId] = *reply
-			}
 			return *reply
 		}
 	}
@@ -209,6 +199,9 @@ func (kv *KVServer) killed() bool {
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
@@ -227,6 +220,9 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	} else {
 		reply.Err = rpc.ErrNoKey
 	}
+
+	kv.DupTable[args.ClientId] = args.SeqNum
+	kv.GetReplys[args.ClientId] = *reply
 }
 
 // Update the value for a key if args.Version matches the version of
@@ -234,6 +230,9 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
 		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
@@ -259,6 +258,9 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	} else {
 		reply.Err = rpc.ErrNoKey
 	}
+
+	kv.DupTable[args.ClientId] = args.SeqNum
+	kv.PutReplys[args.ClientId] = *reply
 }
 
 // StartKVServer() and MakeRSM() must return quickly, so they should

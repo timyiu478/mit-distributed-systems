@@ -12,7 +12,7 @@ https://thesecretlivesofdata.com/raft/
 1. Your code may have loops that repeatedly check for certain events. Don't have these loops execute continuously without pausing, since that will slow your implementation enough that it fails tests. Use Go's condition variables, or insert a `time.Sleep(10 * time.Millisecond)` in each loop iteration.
 1. In Go, when you create a subslice from an existing slice, the subslice is not a copy of the original data. Instead, it is a new slice header that references the same underlying array as the original slice.
 1. No need two goroutines sending AppendEntries: one for heartbeat (empty), one for logs. We can combine them into one goroutine to avoid double sending.
-1. The `applyCh` is a 1-size bounded channel. When you work on Lab3D, you might encounter some bugs because of it.
+1. The `applyCh` is a unbuffered channel. When you work on Lab3D, you might encounter some bugs because of it.
 
 # Current Progress
 
