@@ -155,6 +155,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.CurrentTerm = currentTerm
 		rf.LastIncludedIndex = lastIncludedIndex
 		rf.LastIncludedTerm  = lastIncludedTerm
+		rf.lastApplied       = lastIncludedIndex
 		rf.Log = log
 	}
 }
@@ -630,6 +631,9 @@ func (rf *Raft) closeChannel() {
 	rf.wg.Wait()
 
 	DPrintf(fmt.Sprintf("Server %d starts to close channels in term %d", rf.me, rf.CurrentTerm))
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	close(rf.startCh)
 	close(rf.applyCh)
