@@ -67,6 +67,7 @@ type Raft struct {
 	currentState  State
 
 	applyCh 							chan raftapi.ApplyMsg
+	deliverCh 						chan raftapi.ApplyMsg
 	startCh 							chan struct{}
 	commitCh 							chan struct{}
 	committedCh 					chan struct{}
@@ -548,7 +549,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			SnapshotTerm: rf.LastIncludedTerm,
 			SnapshotIndex: rf.LastIncludedIndex,
 		}
-		rf.applyCh <- applyMsg
+		rf.deliverCh <- applyMsg
 	}
 }
 
@@ -617,9 +618,8 @@ func (rf *Raft) Kill() {
 	// Unblock the killing process
 	go func(applyCh chan raftapi.ApplyMsg, committedCh chan struct{}) {
 		for {
-			_, ok1 := <- applyCh
-			_, ok2 := <- committedCh
-			if !ok1 && !ok2 { break }
+			_, ok := <- applyCh
+			if !ok { break }
 			time.Sleep(time.Duration(100) * time.Millisecond)
 		}
 	}(rf.applyCh, rf.committedCh)
@@ -636,9 +636,8 @@ func (rf *Raft) closeChannel() {
 	defer rf.mu.Unlock()
 
 	close(rf.startCh)
+	close(rf.deliverCh)
 	close(rf.applyCh)
-	close(rf.commitCh)
-	close(rf.committedCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -963,13 +962,6 @@ func (rf *Raft) committedLogHandler() {
 	defer rf.wg.Done()
 
 	for rf.killed() == false {
-		// wait for all "in-flight" applyMsgs are handed 
-		// to applyCh's receiver before prepare the 
-		// next batch of applyMsgs
-		_, ok1 := <- rf.committedCh
-		_, ok2 := <- rf.commitCh
-		if !ok1 || !ok2 { return }
-
 		rf.mu.Lock()
 
 		if len(rf.Log) + rf.LastIncludedIndex < rf.commitIndex {
@@ -981,32 +973,42 @@ func (rf *Raft) committedLogHandler() {
 			rf.lastApplied = rf.LastIncludedIndex
 		}
 
-		msgs := make([]raftapi.ApplyMsg, 0)
-
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
-			DPrintf(fmt.Sprintf("Server %d makes applyMsg for command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
+			DPrintf(fmt.Sprintf("Server %d sends applyMsg to msgDeliver for command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
 				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
 				CommandIndex: i,
 			}
-			msgs = append(msgs, applyMsg)
+
+			rf.deliverCh <- applyMsg
 		}
 
 		rf.lastApplied = rf.commitIndex
 
-		// Send each newly committed entry on applyCh on each peer
-		rf.wg.Add(1)
-		go func(msgs []raftapi.ApplyMsg, applyCh chan raftapi.ApplyMsg, committedCh chan struct{}){
-			defer rf.wg.Done()
-			for _, msg := range msgs {
-				applyCh <- msg
-			}
-			committedCh <- struct{}{}
-		}(msgs, rf.applyCh, rf.committedCh)
-
 		rf.mu.Unlock()
+	}
+}
 
+func (rf *Raft) msgDeliver() {
+	defer rf.wg.Done()
+
+	lastApplied := 0
+	for !rf.killed() {
+		msg := <- rf.deliverCh
+		if msg.CommandValid && msg.CommandIndex <= lastApplied {
+			continue
+		}
+		if msg.SnapshotValid && msg.SnapshotIndex <= lastApplied {
+			continue
+		}
+		rf.applyCh <- msg
+		if msg.CommandValid {
+			lastApplied = msg.SnapshotIndex
+		}
+		if msg.SnapshotValid {
+			lastApplied = msg.SnapshotIndex
+		}
 	}
 }
 
@@ -1062,9 +1064,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers), len(peers))
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
+	rf.deliverCh = make(chan raftapi.ApplyMsg, 3 * len(peers))
 	rf.startCh = make(chan struct{}, 1)
-	rf.commitCh = make(chan struct{}, 1)
-	rf.committedCh = make(chan struct{}, 1)
 	
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
@@ -1093,6 +1094,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// signal commit log handler per 20 Millisecond
 	rf.wg.Add(1)
 	go rf.signal()
+
+	// receives applyMsg from InstallSnapshot() and
+	// commit handler and send the received msgs to
+	// applyCh
+	rf.wg.Add(1)
+	go rf.msgDeliver()
 
 	// close channels when all goroutines are finished
 	go rf.closeChannel()

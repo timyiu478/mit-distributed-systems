@@ -60,6 +60,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 			reply = &rpc.GetReply{}
 			continue
 		}
+		DPrintf(fmt.Sprintf("ck %d: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 		return reply.Value, reply.Version, reply.Err
 	}
 
@@ -107,6 +108,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		}
 
 		if counts[ck.leaderIdx] > 0 && reply.Err == rpc.ErrVersion {
+			DPrintf(fmt.Sprintf("ck %d: receive response of Put operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 			return rpc.ErrMaybe
 		}
 		return reply.Err

@@ -15,7 +15,7 @@ import (
 
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -100,6 +100,11 @@ func (kv *KVServer) Restore(data []byte) {
 	
 	kv.dupMu.Lock()
 	defer kv.dupMu.Unlock()
+
+	clear(kv.Kvs)
+	clear(kv.DupTable)
+	clear(kv.GetReplys)
+	clear(kv.PutReplys)
 
 	if d.Decode(&kv.Kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)

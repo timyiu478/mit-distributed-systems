@@ -14,7 +14,7 @@ import (
 
 )
 
-const Debug = true
+const Debug = false
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
@@ -151,12 +151,15 @@ func (rsm *RSM) reader() {
 				DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because command index(%d) <= lastAppliedIndex(%d)", rsm.me, msg.CommandIndex, rsm.lastAppliedIndex))
 				continue
 			}
-			// t, l := rsm.rf.GetState()
-			// if t != msg.SnapshotTerm { DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because current term (%d) != snapshot term (%d)", rsm.me, t, msg.SnapshotTerm)) continue } else if l { DPrintf(fmt.Sprintf("RSM %d: ignore install snapshot because i'm leader in this term (%d)", rsm.me, t)) continue }
 			rsm.mu.Lock()
 			rsm.sm.Restore(msg.Snapshot)
 			rsm.lastAppliedIndex = msg.SnapshotIndex
-
+			for idx, ch := range rsm.opresCh {
+				if idx <= msg.SnapshotIndex {
+					delete(rsm.opresCh, idx)
+					close(ch)
+				}
+			}
 			rsm.mu.Unlock()
 		}
 	}
@@ -233,6 +236,8 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 							return rpc.OK, opres.res
 						}
 					}
+				} else if !ok {
+					DPrintf(fmt.Sprintf("RSM %d: subscription channel is closed, ID is %d", rsm.me, id))
 				}
 				return rpc.ErrWrongLeader, nil
 			}
