@@ -242,7 +242,7 @@ type AppendEntriesReply struct {
 	XIndex				int
 	XLen     			int
 
-	XIncludedLastIndex int
+	XLastIncludedIndex int
 
 	Success				bool
 }
@@ -260,6 +260,8 @@ type InstallSnapshotArgs struct {
 // InstallSnapshot RPC reply structure
 type InstallSnapshotReply struct {
 	Term 								int
+	PeerId 				int
+	LastIncludedIndex		int
 }
 
 
@@ -378,7 +380,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.XTerm = -1
 	reply.XIndex = -1
 	reply.XLen = -1
-	reply.XIncludedLastIndex = -1
+	reply.XLastIncludedIndex = -1
 
 	// deny request from older term
 	if rf.CurrentTerm > args.Term {
@@ -425,7 +427,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex < rf.LastIncludedIndex {
 		// tell the leader its LastIncludedIndex for preventing
 		// infinitely retries
-		reply.XIncludedLastIndex = rf.LastIncludedIndex
+		reply.XLastIncludedIndex = rf.LastIncludedIndex
 		return
 	}
 
@@ -498,6 +500,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// default reply
 	reply.Term = rf.CurrentTerm
+	reply.LastIncludedIndex = -1
 
 	// deny request if term < currentTerm
 	if args.Term < rf.CurrentTerm {
@@ -543,6 +546,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// save new log and snapshot
 	rf.persist()
+
+	reply.LastIncludedIndex = rf.LastIncludedIndex
 
 	if rf.lastApplied < rf.LastIncludedIndex {
 		rf.lastApplied = rf.LastIncludedIndex
@@ -805,12 +810,11 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 		rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		DPrintf(fmt.Sprintf("Server %d: update peer %d's match index to %d and next index to %d", rf.me, reply.PeerId, rf.matchIndex[reply.PeerId], rf.nextIndex[reply.PeerId]))
 	} else {
-		if reply.XIncludedLastIndex > -1 && reply.XIncludedLastIndex >= rf.LastIncludedIndex {
-			rf.nextIndex[reply.PeerId] = reply.XIncludedLastIndex + 1
-			rf.matchIndex[reply.PeerId] = reply.XIncludedLastIndex
-		} else if reply.XIncludedLastIndex > -1 {
+		if reply.XLastIncludedIndex > -1 && reply.XLastIncludedIndex >= rf.LastIncludedIndex {
+			rf.nextIndex[reply.PeerId] = reply.XLastIncludedIndex + 1
+		} else if reply.XLastIncludedIndex > -1 {
 			// Send InstallSnapshot if reply.XIncludedLastIndex > rf.LastIncludedIndex
-			DPrintf(fmt.Sprintf("Server %d: send InstallSnapshot to peer %d since reply.XIncludedLastIndex(%d) > rf.LastIncludedIndex(%d) in term %d", rf.me, reply.PeerId, reply.XIncludedLastIndex, rf.LastIncludedIndex, rf.CurrentTerm))
+			DPrintf(fmt.Sprintf("Server %d: send InstallSnapshot to peer %d since reply.XLastIncludedIndex(%d) > rf.LastIncludedIndex(%d) in term %d", rf.me, reply.PeerId, reply.XLastIncludedIndex, rf.LastIncludedIndex, rf.CurrentTerm))
 			go func(peer int, term int, leaderId int, lastIncludedIndex int, lastIncludedTerm int, data []byte) {
 				args := &InstallSnapshotArgs{
 					Term: term,
@@ -981,6 +985,9 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 		rf.currentState = FollowerState
 
 		rf.persist()
+	}
+	if rf.nextIndex[reply.PeerId] < reply.LastIncludedIndex + 1 {
+		rf.nextIndex[reply.PeerId] = reply.LastIncludedIndex + 1
 	}
 }
 
