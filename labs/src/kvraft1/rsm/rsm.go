@@ -63,6 +63,7 @@ type RSM struct {
 	// Your definitions here.
 	opresCh      map[int]chan OpRes
 	readerDead   chan struct{}
+	waitersCh    chan struct{}
 	persister    *tester.Persister
 	seqNum            int
 	lastAppliedIndex  int
@@ -91,6 +92,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		sm:           sm,
 		opresCh:      make(map[int]chan OpRes),
 		readerDead:   make(chan struct{}),
+		waitersCh:    make(chan struct{}, 12), // control maximum number of concurrent submitters waiting the command to be committed
 		persister:    persister,
 		seqNum:           0,
 		lastAppliedIndex: 0,
@@ -188,6 +190,12 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		DPrintf(fmt.Sprintf("RSM %d: return ErrWrongLeader since reader is dead", rsm.me))
 		return rpc.ErrWrongLeader, nil
 	}
+
+	rsm.waitersCh <- struct{}{}
+	defer func() { 
+		<- rsm.waitersCh 
+	}()
+
 
 	rsm.mu.Lock()
 
