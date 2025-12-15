@@ -70,7 +70,6 @@ type Raft struct {
 	deliverCh 						chan raftapi.ApplyMsg
 	startCh 							chan struct{}
 	commitCh 							chan struct{}
-	committedCh 					chan struct{}
 
 	wg					  sync.WaitGroup
 }
@@ -242,6 +241,9 @@ type AppendEntriesReply struct {
 	XTerm     		int
 	XIndex				int
 	XLen     			int
+
+	XIncludedLastIndex int
+
 	Success				bool
 }
 
@@ -376,6 +378,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.XTerm = -1
 	reply.XIndex = -1
 	reply.XLen = -1
+	reply.XIncludedLastIndex = -1
 
 	// deny request from older term
 	if rf.CurrentTerm > args.Term {
@@ -419,8 +422,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	// deny request if args.PrevLogIndex < rf.LastIncludedIndex
-	// TODO
 	if args.PrevLogIndex < rf.LastIncludedIndex {
+		// tell the leader its LastIncludedIndex for preventing
+		// infinitely retries
+		reply.XIncludedLastIndex = rf.LastIncludedIndex
 		return
 	}
 
@@ -572,6 +577,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	if rf.killed() {
+		return index, term, false
+	}
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -616,13 +625,13 @@ func (rf *Raft) Kill() {
 
 	// Assume Kill() will be called exactly once only
 	// Unblock the killing process
-	go func(applyCh chan raftapi.ApplyMsg, committedCh chan struct{}) {
+	go func(applyCh chan raftapi.ApplyMsg) {
 		for {
+			time.Sleep(time.Duration(100) * time.Millisecond)
 			_, ok := <- applyCh
 			if !ok { break }
-			time.Sleep(time.Duration(100) * time.Millisecond)
 		}
-	}(rf.applyCh, rf.committedCh)
+	}(rf.applyCh)
 
 	DPrintf(fmt.Sprintf("Server %d is killed", rf.me))
 }
@@ -636,8 +645,8 @@ func (rf *Raft) closeChannel() {
 	defer rf.mu.Unlock()
 
 	close(rf.startCh)
+	close(rf.commitCh)
 	close(rf.deliverCh)
-	close(rf.applyCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -662,7 +671,6 @@ func (rf *Raft) ticker() {
 		}
 
 		// tester.Annotate(fmt.Sprintf("Server %d", rf.me), fmt.Sprintf("start election for term %d", rf.CurrentTerm + 1), "")
-
 
 		// transit to candidate state
 		rf.currentState = CandidateState
@@ -797,9 +805,27 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 		rf.matchIndex[reply.PeerId] = reply.PrevLogIndex + reply.EntriesLength
 		DPrintf(fmt.Sprintf("Server %d: update peer %d's match index to %d and next index to %d", rf.me, reply.PeerId, rf.matchIndex[reply.PeerId], rf.nextIndex[reply.PeerId]))
 	} else {
-		// TODO: findout why this can happen
-		// when the reply.Term >= rf.currentTerm
-		if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 {
+		if reply.XIncludedLastIndex > -1 && reply.XIncludedLastIndex >= rf.LastIncludedIndex {
+			rf.nextIndex[reply.PeerId] = reply.XIncludedLastIndex + 1
+			rf.matchIndex[reply.PeerId] = reply.XIncludedLastIndex
+		} else if reply.XIncludedLastIndex > -1 {
+			// Send InstallSnapshot if reply.XIncludedLastIndex > rf.LastIncludedIndex
+			DPrintf(fmt.Sprintf("Server %d: send InstallSnapshot to peer %d since reply.XIncludedLastIndex(%d) > rf.LastIncludedIndex(%d) in term %d", rf.me, reply.PeerId, reply.XIncludedLastIndex, rf.LastIncludedIndex, rf.CurrentTerm))
+			go func(peer int, term int, leaderId int, lastIncludedIndex int, lastIncludedTerm int, data []byte) {
+				args := &InstallSnapshotArgs{
+					Term: term,
+					LeaderId: leaderId,
+					LastIncludedIndex:		lastIncludedIndex,
+					LastIncludedTerm:    lastIncludedTerm,
+					Data: 	data,
+				}
+				reply := &InstallSnapshotReply{}
+				ret := rf.sendInstallSnapshot(peer, args, reply)
+				if ret && rf.killed() == false { 
+					go rf.installSnapshotReplyHandler(*reply)
+				}
+			}(reply.PeerId, rf.CurrentTerm, rf.me, rf.LastIncludedIndex, rf.LastIncludedTerm, rf.snapshot)
+		} else if reply.XTerm == -1 && reply.XIndex == -1 && reply.XLen == -1 { // when the reply.Term >= rf.currentTerm
 			// normal log backtracking: decrement nextIndex by 1
 			rf.nextIndex[reply.PeerId] = max(1, reply.PrevLogIndex)
 		}  else if reply.XTerm == -1 { // log backtracking optimization
@@ -962,6 +988,12 @@ func (rf *Raft) committedLogHandler() {
 	defer rf.wg.Done()
 
 	for rf.killed() == false {
+		select {
+			case _, ok := <- rf.commitCh:
+				if !ok { return }
+			case <- time.After(time.Duration(10) * time.Millisecond):
+		}
+
 		rf.mu.Lock()
 
 		if len(rf.Log) + rf.LastIncludedIndex < rf.commitIndex {
@@ -980,26 +1012,35 @@ func (rf *Raft) committedLogHandler() {
 				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
 				CommandIndex: i,
 			}
-
-			rf.deliverCh <- applyMsg
+			if len(rf.deliverCh) < cap(rf.deliverCh) {
+				rf.deliverCh <- applyMsg
+				rf.lastApplied = i
+			}
 		}
 
-		rf.lastApplied = rf.commitIndex
-
 		rf.mu.Unlock()
+
 	}
 }
 
-func (rf *Raft) msgDeliver() {
+func (rf *Raft) msgDeliver(lastApplied int) {
 	defer rf.wg.Done()
 
-	lastApplied := 0
 	for !rf.killed() {
-		msg := <- rf.deliverCh
+		var msg raftapi.ApplyMsg
+		select {
+			case m, ok := <- rf.deliverCh:
+				if !ok { break }
+				msg = m
+			case <- time.After(time.Duration(10) * time.Millisecond):
+				continue
+		}
 		if msg.CommandValid && msg.CommandIndex <= lastApplied {
+			DPrintf(fmt.Sprintf("Server %d skip command because command index (%d) <= lastApplied (%d)", rf.me, msg.CommandIndex, lastApplied))
 			continue
 		}
 		if msg.SnapshotValid && msg.SnapshotIndex <= lastApplied {
+			DPrintf(fmt.Sprintf("Server %d skip snapshot because snapshot index (%d) <= lastApplied (%d)", rf.me, msg.SnapshotIndex, lastApplied))
 			continue
 		}
 		rf.applyCh <- msg
@@ -1010,6 +1051,8 @@ func (rf *Raft) msgDeliver() {
 			lastApplied = msg.SnapshotIndex
 		}
 	}
+
+	close(rf.applyCh)
 }
 
 func (rf *Raft) heartbeat() {
@@ -1025,8 +1068,6 @@ func (rf *Raft) heartbeat() {
 
 func (rf *Raft) signal() {
 	defer rf.wg.Done()
-
-	rf.committedCh <- struct{}{}
 
 	for !rf.killed() {
 		if len(rf.commitCh) < cap(rf.commitCh) {
@@ -1064,8 +1105,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers), len(peers))
 	rf.Log = make([]Entry, 0, len(peers))
 	rf.applyCh = applyCh
-	rf.deliverCh = make(chan raftapi.ApplyMsg, 3 * len(peers))
+	rf.deliverCh = make(chan raftapi.ApplyMsg, 1000)
 	rf.startCh = make(chan struct{}, 1)
+	rf.commitCh = make(chan struct{}, 1)
 	
 	rf.LastIncludedIndex       	= 0
 	rf.LastIncludedTerm       	= 0
@@ -1074,6 +1116,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.snapshot = persister.ReadSnapshot()
+
+	// receives applyMsg from InstallSnapshot() and
+	// commit handler and send the received msgs to
+	// applyCh
+	rf.wg.Add(1)
+	go rf.msgDeliver(rf.lastApplied)
 
 	// start ticker goroutine to start elections
 	rf.wg.Add(1)
@@ -1090,16 +1138,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// signal AE req handler per 100 Millisecond
 	rf.wg.Add(1)
 	go rf.heartbeat()
-
-	// signal commit log handler per 20 Millisecond
-	rf.wg.Add(1)
-	go rf.signal()
-
-	// receives applyMsg from InstallSnapshot() and
-	// commit handler and send the received msgs to
-	// applyCh
-	rf.wg.Add(1)
-	go rf.msgDeliver()
 
 	// close channels when all goroutines are finished
 	go rf.closeChannel()

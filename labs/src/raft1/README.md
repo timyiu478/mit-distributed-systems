@@ -14,6 +14,14 @@ https://thesecretlivesofdata.com/raft/
 1. No need two goroutines sending AppendEntries: one for heartbeat (empty), one for logs. We can combine them into one goroutine to avoid double sending.
 1. The `applyCh` is a unbuffered channel. When you work on Lab3D, you might encounter some bugs because of it.
 
+# Implementation Details
+
+## Snapshot
+
+If the follower receives a AppendEntries RPC message from leader where the *prevLogIndex* is smaller then the followers's *lastIncludedIndex*, the follower will reject this message and tells the leader his *lastIncludedIndex*.
+
+This enables the leader know the reason of rejecting the message is related to snapshot and trimmed log. The leader can advance the *nextIndex[followerId]* to *lastIncludedIndex + 1* to skip the log entries that included in the snapshot or send a snapshot that cover more log entries than *lastIncludedIndex*.
+
 # Current Progress
 
 The program can pass the 3D tests several times.

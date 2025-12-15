@@ -15,3 +15,7 @@ The hashmap of 1-size buffered channels `rsm.opresCh` is the key structure for s
 It is possible that the raft log stores duplicated client requests when the server is restarted and replaying the committed log entries while receiving duplicated client requests. This is because the server's duplicated table is restoring via re-applying the commands and it does not reflect the latest sequence number the client submitted.
 
 Ref: http://nil.csail.mit.edu/6.5840/2023/notes/l-raft-QA.txt
+
+# Known Issues
+
+* history is not linearizable
