@@ -71,8 +71,6 @@ type Raft struct {
 	deliverCh 						chan raftapi.ApplyMsg
 	startCh 							chan struct{}
 	commitCh 							chan struct{}
-
-	wg					  sync.WaitGroup
 }
 
 // return currentTerm and whether this server
@@ -642,27 +640,12 @@ func (rf *Raft) Kill() {
 	DPrintf(fmt.Sprintf("Server %d is killed", rf.me))
 }
 
-func (rf *Raft) closeChannel() {
-	rf.wg.Wait()
-
-	DPrintf(fmt.Sprintf("Server %d starts to close channels in term %d", rf.me, rf.CurrentTerm))
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	close(rf.startCh)
-	close(rf.commitCh)
-	close(rf.deliverCh)
-}
-
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
 
 func (rf *Raft) ticker() {
-	defer rf.wg.Done()
-
 	for rf.killed() == false {
 		// Your code here (3A)
 		time.Sleep(time.Duration(10) * time.Millisecond)
@@ -889,8 +872,6 @@ func (rf *Raft) appendEntriesReplyHandler(reply AppendEntriesReply) {
 }
 
 func (rf *Raft) appendEntriesReqHandler() {
-	defer rf.wg.Done()
-
 	for rf.killed() == false {
 		_, ok := <- rf.startCh
 		if !ok { return }
@@ -993,8 +974,6 @@ func (rf *Raft) installSnapshotReplyHandler(reply InstallSnapshotReply) {
 }
 
 func (rf *Raft) committedLogHandler() {
-	defer rf.wg.Done()
-
 	for rf.killed() == false {
 		select {
 			case _, ok := <- rf.commitCh:
@@ -1027,13 +1006,10 @@ func (rf *Raft) committedLogHandler() {
 		}
 
 		rf.mu.Unlock()
-
 	}
 }
 
 func (rf *Raft) msgDeliver(lastApplied int) {
-	defer rf.wg.Done()
-
 	for !rf.killed() {
 		var msg raftapi.ApplyMsg
 		select {
@@ -1068,22 +1044,9 @@ func (rf *Raft) msgDeliver(lastApplied int) {
 }
 
 func (rf *Raft) heartbeat() {
-	defer rf.wg.Done()
-
 	for !rf.killed() {
 		if len(rf.startCh) < cap(rf.startCh) {
 			rf.startCh <- struct{}{}
-		}
-		time.Sleep(time.Duration(100) * time.Millisecond)
-	}
-}
-
-func (rf *Raft) signal() {
-	defer rf.wg.Done()
-
-	for !rf.killed() {
-		if len(rf.commitCh) < cap(rf.commitCh) {
-			rf.commitCh <- struct{}{}
 		}
 		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
@@ -1132,27 +1095,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// receives applyMsg from InstallSnapshot() and
 	// commit handler and send the received msgs to
 	// applyCh
-	rf.wg.Add(1)
 	go rf.msgDeliver(rf.lastApplied)
 
 	// start ticker goroutine to start elections
-	rf.wg.Add(1)
 	go rf.ticker()
 
 	// start commit handlers
-	rf.wg.Add(1)
 	go rf.committedLogHandler()
 
 	// start appendEntries request handler
-	rf.wg.Add(1)
 	go rf.appendEntriesReqHandler()
 
 	// signal AE req handler per 100 Millisecond
-	rf.wg.Add(1)
 	go rf.heartbeat()
-
-	// close channels when all goroutines are finished
-	go rf.closeChannel()
 
 	return rf
 }
