@@ -7,6 +7,7 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
+	"log"
 	"bytes"
 	"fmt"
 	"math/rand"
@@ -1042,19 +1043,23 @@ func (rf *Raft) msgDeliver(lastApplied int) {
 			case <- time.After(time.Duration(10) * time.Millisecond):
 				continue
 		}
-		if msg.CommandValid && msg.CommandIndex <= lastApplied {
-			DPrintf(fmt.Sprintf("Server %d skip command because command index (%d) <= lastApplied (%d)", rf.me, msg.CommandIndex, lastApplied))
-			continue
-		}
-		if msg.SnapshotValid && msg.SnapshotIndex <= lastApplied {
-			DPrintf(fmt.Sprintf("Server %d skip snapshot because snapshot index (%d) <= lastApplied (%d)", rf.me, msg.SnapshotIndex, lastApplied))
-			continue
-		}
-		rf.applyCh <- msg
 		if msg.CommandValid {
-			lastApplied = msg.SnapshotIndex
+			if msg.CommandIndex <= lastApplied {
+				DPrintf(fmt.Sprintf("Server %d skip command because command index (%d) <= lastApplied (%d)", rf.me, msg.CommandIndex, lastApplied))
+				continue
+			}
+			if msg.CommandIndex - 1 != lastApplied {
+				log.Fatalf("Server %d: msg.CommandIndex(%d) - 1 != lastApplied(%d)", rf.me, msg.CommandIndex, lastApplied)
+			}
+			rf.applyCh <- msg
+			lastApplied = msg.CommandIndex
 		}
 		if msg.SnapshotValid {
+			if msg.SnapshotIndex <= lastApplied {
+				DPrintf(fmt.Sprintf("Server %d skip snapshot because snapshot index (%d) <= lastApplied (%d)", rf.me, msg.SnapshotIndex, lastApplied))
+				continue
+			}
+			rf.applyCh <- msg
 			lastApplied = msg.SnapshotIndex
 		}
 	}
