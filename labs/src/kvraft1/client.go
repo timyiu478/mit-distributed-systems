@@ -12,8 +12,6 @@ import (
 	"6.5840/tester1"
 )
 
-var clientGerarator int32
-
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string

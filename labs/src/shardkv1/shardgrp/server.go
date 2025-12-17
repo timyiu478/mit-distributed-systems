@@ -1,6 +1,10 @@
 package shardgrp
 
 import (
+	"fmt"
+	"log"
+	"bytes"
+	"sync"
 	"sync/atomic"
 
 
@@ -12,6 +16,19 @@ import (
 	"6.5840/tester1"
 )
 
+const Debug = false
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
+type ValueWithVersion struct {
+	Value string
+	Version rpc.Tversion
+}
 
 type KVServer struct {
 	me   int
@@ -20,30 +37,145 @@ type KVServer struct {
 	gid  tester.Tgid
 
 	// Your code here
+	mu 	 		 sync.Mutex
+	dupMu 	 sync.Mutex
+
+	Kvs      map[string]ValueWithVersion
+
+	DupTable    map[string]int // duplicate table; entry per client
+
+	GetReplys   map[string]rpc.GetReply
+	PutReplys   map[string]rpc.PutReply
 }
 
 
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
+
+	switch r := req.(type) {
+		case rpc.GetArgs: {
+			reply := &rpc.GetReply{}
+			kv.get(&r, reply)
+			return *reply
+		}
+		case rpc.PutArgs: {
+			reply := &rpc.PutReply{}
+			kv.put(&r, reply)
+			return *reply
+		}
+	}
+
+	// Invalid req
 	return nil
 }
 
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	DPrintf(fmt.Sprintf("Kv %d: snapshot", kv.me)) 
+
+	w := new(bytes.Buffer)
+
+	e := labgob.NewEncoder(w)
+
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
+	e.Encode(kv.Kvs)
+	e.Encode(kv.DupTable)
+	e.Encode(kv.GetReplys)
+	e.Encode(kv.PutReplys)
+
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+
+	DPrintf(fmt.Sprintf("Kv %d: restore", kv.me))
+
+	r := bytes.NewBuffer(data)
+
+	d := labgob.NewDecoder(r)
+
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
+	clear(kv.Kvs)
+	clear(kv.DupTable)
+	clear(kv.GetReplys)
+	clear(kv.PutReplys)
+
+	if d.Decode(&kv.Kvs) != nil {
+		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
+	}
+	if d.Decode(&kv.DupTable) != nil {
+		log.Fatalf("Kv %d: couldn't decode dupTable", kv.me)
+	}
+	if d.Decode(&kv.GetReplys) != nil {
+		log.Fatalf("Kv %d: couldn't decode getReplys", kv.me)
+	}
+	if d.Decode(&kv.PutReplys) != nil {
+		log.Fatalf("Kv %d: couldn't decode putReplys", kv.me)
+	}
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.dupMu.Lock()
+	seqNum := kv.DupTable[args.ClientId]
+
+	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+
+	if args.SeqNum <= seqNum {
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.GetReplys[args.ClientId].Err
+		reply.Value = kv.GetReplys[args.ClientId].Value
+		reply.Version = kv.GetReplys[args.ClientId].Version
+		kv.dupMu.Unlock()
+		return
+	}
+	kv.dupMu.Unlock()
+
+	// Note: Submit() waits for the command to be committed if it is the leader
+	err, rep := kv.rsm.Submit(*args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
+	reply.Err = rep.(rpc.GetReply).Err
+	reply.Value = rep.(rpc.GetReply).Value
+	reply.Version = rep.(rpc.GetReply).Version
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.dupMu.Lock()
+	seqNum := kv.DupTable[args.ClientId]
+
+	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+
+	if args.SeqNum <= seqNum {
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.PutReplys[args.ClientId].Err
+		kv.dupMu.Unlock()
+		return
+	}
+	kv.dupMu.Unlock()
+
+	// Note: Submit() waits for the command to be committed if it is the leader
+	err, rep := kv.rsm.Submit(*args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
+	reply.Err = rep.(rpc.PutReply).Err
 }
 
 // Freeze the specified shard (i.e., reject future Get/Puts for this
@@ -98,6 +230,83 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 
 	// Your code here
+	DPrintf(fmt.Sprintf("Kv %d is starting", kv.me))
+
+	kv.Kvs       = make(map[string]ValueWithVersion)
+  kv.DupTable  = make(map[string]int)
+	kv.GetReplys = make(map[string]rpc.GetReply)
+	kv.PutReplys = make(map[string]rpc.PutReply)
+
+	if maxraftstate > -1 {
+		snapshotSize := persister.SnapshotSize()
+
+		if snapshotSize > 0 {
+			snapshot := persister.ReadSnapshot()
+			DPrintf(fmt.Sprintf("KV %d: starts to restore snapshot", kv.me))
+			kv.Restore(snapshot)
+		}
+	}
 
 	return []tester.IService{kv, kv.rsm.Raft()}
+}
+
+func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
+	seqNum := kv.DupTable[args.ClientId]
+	if args.SeqNum <= seqNum {
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
+		reply.Err = kv.GetReplys[args.ClientId].Err 
+		reply.Value = kv.GetReplys[args.ClientId].Value
+		reply.Version = kv.GetReplys[args.ClientId].Version
+		return
+	}
+
+	vv, ok := kv.Kvs[args.Key]
+
+	if ok {
+		reply.Value = vv.Value
+		reply.Version = vv.Version
+		reply.Err = rpc.OK
+	} else {
+		reply.Err = rpc.ErrNoKey
+	}
+
+	kv.DupTable[args.ClientId] = args.SeqNum
+	kv.GetReplys[args.ClientId] = *reply
+}
+
+func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
+	seqNum := kv.DupTable[args.ClientId]
+	if args.SeqNum <= seqNum {
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.PutReplys[args.ClientId].Err
+		return
+	}
+
+	vv, ok := kv.Kvs[args.Key]
+
+	if ok && args.Version == vv.Version {
+		vv.Value = args.Value
+		vv.Version += 1
+		kv.Kvs[args.Key] = vv
+		reply.Err = rpc.OK
+	} else if ok && args.Version != vv.Version {
+			reply.Err = rpc.ErrVersion
+	} else if args.Version == 0 {
+		vv := ValueWithVersion{}
+		vv.Value = args.Value
+		vv.Version = 1
+		kv.Kvs[args.Key] = vv
+		reply.Err = rpc.OK
+	} else {
+		reply.Err = rpc.ErrNoKey
+	}
+
+	kv.DupTable[args.ClientId] = args.SeqNum
+	kv.PutReplys[args.ClientId] = *reply
 }
