@@ -192,10 +192,9 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	}
 
 	rsm.waitersCh <- struct{}{}
-	defer func() { 
-		<- rsm.waitersCh 
+	defer func() {
+		<- rsm.waitersCh
 	}()
-
 
 	rsm.mu.Lock()
 
