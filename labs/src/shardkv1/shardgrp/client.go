@@ -2,8 +2,6 @@ package shardgrp
 
 import (
 	"fmt"
-	"time"
-	"math/rand"
 	"sync"
 	"github.com/google/uuid"
 
@@ -24,7 +22,6 @@ type Clerk struct {
 
 func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
- 	rand.Seed(time.Now().UnixNano())
 	ck.leaderIdx = 0
 	ck.seqNum = 0
 	ck.clientId  = uuid.New().String()

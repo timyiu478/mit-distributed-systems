@@ -12,6 +12,7 @@ import (
 	"6.5840/tester1"
 )
 
+
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
@@ -25,7 +26,6 @@ type Clerk struct {
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	// You'll have to add code here.
- 	rand.Seed(time.Now().UnixNano())
 	ck.leaderIdx = 0
 	ck.seqNum = 0
 	ck.clientId  = uuid.New().String()
