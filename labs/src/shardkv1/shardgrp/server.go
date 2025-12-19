@@ -44,7 +44,7 @@ type KVServer struct {
 
 	Num  shardcfg.Tnum
 
-	Unfreezed   map[shardcfg.Tshid]bool
+	Freezed   map[shardcfg.Tshid]bool
 
 	Kvs      map[string]ValueWithVersion
 
@@ -106,7 +106,7 @@ func (kv *KVServer) Snapshot() []byte {
 	e.Encode(kv.GetReplys)
 	e.Encode(kv.PutReplys)
 	e.Encode(kv.Num)
-	e.Encode(kv.Unfreezed)
+	e.Encode(kv.Freezed)
 
 	return w.Bytes()
 }
@@ -127,7 +127,7 @@ func (kv *KVServer) Restore(data []byte) {
 	clear(kv.DupTable)
 	clear(kv.GetReplys)
 	clear(kv.PutReplys)
-	clear(kv.Unfreezed)
+	clear(kv.Freezed)
 
 	if d.Decode(&kv.Kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
@@ -144,8 +144,8 @@ func (kv *KVServer) Restore(data []byte) {
 	if d.Decode(&kv.Num) != nil {
 		log.Fatalf("Kv %d: couldn't decode Num", kv.me)
 	}
-	if d.Decode(&kv.Unfreezed) != nil {
-		log.Fatalf("Kv %d: couldn't decode Unfreezed", kv.me)
+	if d.Decode(&kv.Freezed) != nil {
+		log.Fatalf("Kv %d: couldn't decode Freezed", kv.me)
 	}
 }
 
@@ -155,7 +155,7 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	defer kv.mu.Unlock()
 
 	shard := shardcfg.Key2Shard(args.Key)
-	if !kv.Unfreezed[shard] {
+	if kv.Freezed[shard] {
 		reply.Err = rpc.ErrWrongGroup
 		return
 	}
@@ -192,7 +192,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	defer kv.mu.Unlock()
 
 	shard := shardcfg.Key2Shard(args.Key)
-	if !kv.Unfreezed[shard] {
+	if kv.Freezed[shard] {
 		reply.Err = rpc.ErrWrongGroup
 		return
 	}
@@ -239,7 +239,9 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 		return
 	}
 
-	reply = rep.(*shardrpc.FreezeShardReply)
+	reply.Err = rep.(shardrpc.FreezeShardReply).Err
+	reply.Num = rep.(shardrpc.FreezeShardReply).Num
+	reply.State = rep.(shardrpc.FreezeShardReply).State
 }
 
 func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
@@ -250,21 +252,21 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 		return
 	}
 
-	kv.Unfreezed[args.Shard] = false
+	kv.Freezed[args.Shard] = true
 	kv.Num = args.Num
 
 	// find key-value pairs that belong to shard args.Shard
-	kvs := make(map[string]ValueWithVersion)
+	Kvs := make(map[string]ValueWithVersion)
 	for k, v := range kv.Kvs {
 		if shardcfg.Key2Shard(k) == args.Shard {
-			kvs[k] = v
+			Kvs[k] = v
 		}
 	}
 
 	// encode kvs
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(kvs)
+	e.Encode(Kvs)
 
 	reply.Num = kv.Num
 	reply.Err = rpc.OK
@@ -289,7 +291,7 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		return
 	}
 
-	reply = rep.(*shardrpc.InstallShardReply)
+	reply.Err = rep.(shardrpc.InstallShardReply).Err
 }
 
 func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
@@ -301,8 +303,6 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 
 	kv.Num = args.Num
 
-	kv.Unfreezed[args.Shard] = true
-
 	r := bytes.NewBuffer(args.State)
 
 	d := labgob.NewDecoder(r)
@@ -313,7 +313,12 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
 	}
 
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	maps.Copy(kv.Kvs, kvs)
+
+	reply.Err = rpc.OK
 }
 
 // Delete the specified shard.
@@ -334,15 +339,20 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		return
 	}
 
-	reply = rep.(*shardrpc.DeleteShardReply)
+	kv.Freezed[args.Shard] = false
+
+	reply.Err = rep.(shardrpc.DeleteShardReply).Err
 }
 
 func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
 	// reject old RPCs based on Num
-	if args.Num != kv.Num || kv.Unfreezed[args.Shard] {
+	if args.Num != kv.Num || kv.Freezed[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
+
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
 
 	// find keys that belong to shard args.Shard
 	// and then delete them
@@ -398,7 +408,7 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.GetReplys = make(map[string]rpc.GetReply)
 	kv.PutReplys = make(map[string]rpc.PutReply)
 
-	kv.Unfreezed   = make(map[shardcfg.Tshid]bool)
+	kv.Freezed   = make(map[shardcfg.Tshid]bool)
 
 	if maxraftstate > -1 {
 		snapshotSize := persister.SnapshotSize()

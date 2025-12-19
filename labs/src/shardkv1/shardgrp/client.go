@@ -108,6 +108,7 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 		}
 
 		if reply.Num > args.Num {
+			DPrintf(fmt.Sprintf("ck %s: Freezeshard reply Num %d > args.Num %d", ck.clientId, reply.Num, args.Num))
 			return nil, reply.Err
 		}
 
@@ -120,7 +121,7 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	args := &shardrpc.InstallShardArgs{Shard: s, Num: num}
+	args := &shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := &shardrpc.InstallShardReply{}
 
 	counts := make([]int, len(ck.servers))

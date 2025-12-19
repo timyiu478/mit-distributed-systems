@@ -5,14 +5,25 @@ package shardctrler
 //
 
 import (
+	"fmt"
+	"log"
 	"sync"
 
 	"6.5840/kvsrv1"
+	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
 )
 
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+}
 
 // ShardCtrler for the controller and kv clerk.
 type ShardCtrler struct {
@@ -59,8 +70,45 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
 
-	sck.
-	// determine which shardgrp to need to change?
+	oldConfig := sck.Query()
+
+	cks := make(map[tester.Tgid]*shardgrp.Clerk)
+
+	for s := 0; s < shardcfg.NShards; s++ {
+		shard := shardcfg.Tshid(s)
+
+		oldGid, oldServers, oldOk := oldConfig.GidServers(shard)
+		newGid, newServers, newOk := new.GidServers(shard)
+
+		if newOk && oldOk {
+			if oldGid == newGid { 
+				DPrintf(fmt.Sprintf("SCK: the gid of shard %d remains unchange", s))
+				continue 
+			}
+			DPrintf(fmt.Sprintf("SCK: change shard %d from current gid %d to new gid %d", s, oldGid, newGid))
+
+			oldShardGrpCk, oldOk := cks[oldGid]
+			newShardGrpCk, newOk := cks[newGid]
+
+			if !oldOk { 
+				oldShardGrpCk = shardgrp.MakeClerk(sck.clnt, oldServers)
+			}
+			if !newOk {
+				newShardGrpCk = shardgrp.MakeClerk(sck.clnt, newServers)
+			}
+
+			state, err1 := oldShardGrpCk.FreezeShard(shard, new.Num)
+
+			if err1 == rpc.OK {
+				err2 := newShardGrpCk.InstallShard(shard, state, new.Num)
+				if err2 == rpc.OK {
+					oldShardGrpCk.DeleteShard(shard, new.Num)
+
+					sck.IKVClerk.Put("config", new.String(), rpc.Tversion(new.Num))
+				}
+			}
+		}
+	}
 }
 
 
