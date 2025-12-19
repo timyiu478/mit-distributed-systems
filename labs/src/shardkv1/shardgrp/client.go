@@ -7,6 +7,7 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp/shardrpc"
 	"6.5840/tester1"
 )
 
@@ -87,15 +88,79 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
 	// Your code here
-	return nil, ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	args := &shardrpc.FreezeShardArgs{Shard: s, Num: num}
+	reply := &shardrpc.FreezeShardReply{}
+
+	counts := make([]int, len(ck.servers))
+
+	for {
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.FreezeShard", args, reply)
+
+		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+			if ret == false { counts[ck.leaderIdx] += 1 }
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &shardrpc.FreezeShardReply{}
+			continue
+		}
+
+		if reply.Num > args.Num {
+			return nil, reply.Err
+		}
+
+		return reply.State, reply.Err
+	}
 }
 
 func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
 	// Your code here
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	args := &shardrpc.InstallShardArgs{Shard: s, Num: num}
+	reply := &shardrpc.InstallShardReply{}
+
+	counts := make([]int, len(ck.servers))
+
+	for {
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.InstallShard", args, reply)
+
+		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+			if ret == false { counts[ck.leaderIdx] += 1 }
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &shardrpc.InstallShardReply{}
+			continue
+		}
+
+		return reply.Err
+	}
 }
 
 func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	// Your code here
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	args := &shardrpc.DeleteShardArgs{Shard: s, Num: num}
+	reply := &shardrpc.DeleteShardReply{}
+
+	counts := make([]int, len(ck.servers))
+
+	for {
+		server := ck.servers[ck.leaderIdx]
+		ret := ck.clnt.Call(server, "KVServer.DeleteShard", args, reply)
+
+		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+			if ret == false { counts[ck.leaderIdx] += 1 }
+			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
+			reply = &shardrpc.DeleteShardReply{}
+			continue
+		}
+
+		return reply.Err
+	}
 }

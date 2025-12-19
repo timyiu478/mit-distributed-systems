@@ -2,8 +2,6 @@ package kvraft
 
 import (
 	"fmt"
-	"time"
-	"math/rand"
 	"sync"
 	"github.com/google/uuid"
 

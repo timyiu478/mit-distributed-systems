@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"bytes"
+	"maps"
 	"sync"
 	"sync/atomic"
 
@@ -13,6 +14,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/shardkv1/shardgrp/shardrpc"
+	"6.5840/shardkv1/shardcfg"
 	"6.5840/tester1"
 )
 
@@ -40,6 +42,10 @@ type KVServer struct {
 	mu 	 		 sync.Mutex
 	dupMu 	 sync.Mutex
 
+	Num  shardcfg.Tnum
+
+	Unfreezed   map[shardcfg.Tshid]bool
+
 	Kvs      map[string]ValueWithVersion
 
 	DupTable    map[string]int // duplicate table; entry per client
@@ -51,7 +57,6 @@ type KVServer struct {
 
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
-
 	switch r := req.(type) {
 		case rpc.GetArgs: {
 			reply := &rpc.GetReply{}
@@ -61,6 +66,21 @@ func (kv *KVServer) DoOp(req any) any {
 		case rpc.PutArgs: {
 			reply := &rpc.PutReply{}
 			kv.put(&r, reply)
+			return *reply
+		}
+		case shardrpc.FreezeShardArgs: {
+			reply := &shardrpc.FreezeShardReply{}
+			kv.freezeShard(&r, reply)
+			return *reply
+		}
+		case shardrpc.InstallShardArgs: {
+			reply := &shardrpc.InstallShardReply{}
+			kv.installShard(&r, reply)
+			return *reply
+		}
+		case shardrpc.DeleteShardArgs: {
+			reply := &shardrpc.DeleteShardReply{}
+			kv.deleteShard(&r, reply)
 			return *reply
 		}
 	}
@@ -85,6 +105,8 @@ func (kv *KVServer) Snapshot() []byte {
 	e.Encode(kv.DupTable)
 	e.Encode(kv.GetReplys)
 	e.Encode(kv.PutReplys)
+	e.Encode(kv.Num)
+	e.Encode(kv.Unfreezed)
 
 	return w.Bytes()
 }
@@ -105,6 +127,7 @@ func (kv *KVServer) Restore(data []byte) {
 	clear(kv.DupTable)
 	clear(kv.GetReplys)
 	clear(kv.PutReplys)
+	clear(kv.Unfreezed)
 
 	if d.Decode(&kv.Kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
@@ -118,12 +141,24 @@ func (kv *KVServer) Restore(data []byte) {
 	if d.Decode(&kv.PutReplys) != nil {
 		log.Fatalf("Kv %d: couldn't decode putReplys", kv.me)
 	}
+	if d.Decode(&kv.Num) != nil {
+		log.Fatalf("Kv %d: couldn't decode Num", kv.me)
+	}
+	if d.Decode(&kv.Unfreezed) != nil {
+		log.Fatalf("Kv %d: couldn't decode Unfreezed", kv.me)
+	}
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
+	shard := shardcfg.Key2Shard(args.Key)
+	if !kv.Unfreezed[shard] {
+		reply.Err = rpc.ErrWrongGroup
+		return
+	}
 
 	kv.dupMu.Lock()
 	seqNum := kv.DupTable[args.ClientId]
@@ -156,6 +191,12 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	shard := shardcfg.Key2Shard(args.Key)
+	if !kv.Unfreezed[shard] {
+		reply.Err = rpc.ErrWrongGroup
+		return
+	}
+
 	kv.dupMu.Lock()
 	seqNum := kv.DupTable[args.ClientId]
 
@@ -182,16 +223,136 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 // shard) and return the key/values stored in that shard.
 func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// reject old RPCs based on Num
+	if args.Num <= kv.Num {
+		reply.Num = kv.Num
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	err, rep := kv.rsm.Submit(*args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
+
+	reply = rep.(*shardrpc.FreezeShardReply)
+}
+
+func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
+	// reject old RPCs based on Num
+	if args.Num <= kv.Num {
+		reply.Num = kv.Num
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	kv.Unfreezed[args.Shard] = false
+	kv.Num = args.Num
+
+	// find key-value pairs that belong to shard args.Shard
+	kvs := make(map[string]ValueWithVersion)
+	for k, v := range kv.Kvs {
+		if shardcfg.Key2Shard(k) == args.Shard {
+			kvs[k] = v
+		}
+	}
+
+	// encode kvs
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kvs)
+
+	reply.Num = kv.Num
+	reply.Err = rpc.OK
+	reply.State = w.Bytes()
 }
 
 // Install the supplied state for the specified shard.
 func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// reject old RPCs based on Num
+	if args.Num <= kv.Num {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	err, rep := kv.rsm.Submit(*args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
+
+	reply = rep.(*shardrpc.InstallShardReply)
+}
+
+func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
+	// reject old RPCs based on Num
+	if args.Num <= kv.Num {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	kv.Num = args.Num
+
+	kv.Unfreezed[args.Shard] = true
+
+	r := bytes.NewBuffer(args.State)
+
+	d := labgob.NewDecoder(r)
+
+	var kvs map[string]ValueWithVersion
+
+	if d.Decode(&kvs) != nil {
+		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
+	}
+
+	maps.Copy(kv.Kvs, kvs)
 }
 
 // Delete the specified shard.
 func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// reject old RPCs based on Num
+	if args.Num != kv.Num || !kv.Freezed[args.Shard] {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	err, rep := kv.rsm.Submit(*args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
+
+	reply = rep.(*shardrpc.DeleteShardReply)
+}
+
+func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
+	// reject old RPCs based on Num
+	if args.Num != kv.Num || kv.Unfreezed[args.Shard] {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	// find keys that belong to shard args.Shard
+	// and then delete them
+	for k, _ := range kv.Kvs {
+		if shardcfg.Key2Shard(k) == args.Shard {
+			delete(kv.Kvs, k)
+		}
+	}
+
+	reply.Err = rpc.OK
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -236,6 +397,8 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
   kv.DupTable  = make(map[string]int)
 	kv.GetReplys = make(map[string]rpc.GetReply)
 	kv.PutReplys = make(map[string]rpc.PutReply)
+
+	kv.Unfreezed   = make(map[shardcfg.Tshid]bool)
 
 	if maxraftstate > -1 {
 		snapshotSize := persister.SnapshotSize()

@@ -9,6 +9,7 @@ package shardkv
 //
 
 import (
+	"time"
 	"fmt"
 	"sync"
 
@@ -53,23 +54,31 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	config := ck.sck.Query()
-	shard  := shardcfg.Key2Shard(key)
+	for {
+		config := ck.sck.Query()
+		shard  := shardcfg.Key2Shard(key)
 	
-	gid, servers, ok := config.GidServers(shard)
+		gid, servers, ok := config.GidServers(shard)
 
-	if !ok {
-		DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
-		return "", 0, rpc.ErrWrongGroup
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
+			return "", 0, rpc.ErrWrongGroup
+		}
+
+		grpCk, ok := ck.shardgrpCks[gid]
+
+		if !ok {
+			grpCk = shardgrp.MakeClerk(ck.clnt, servers)
+		}
+
+		val, ver, err := grpCk.Get(key)
+
+		if err != rpc.ErrWrongGroup {
+			return val, ver, err
+		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
-
-	grpCk, ok := ck.shardgrpCks[gid]
-
-	if !ok {
-		grpCk = shardgrp.MakeClerk(ck.clnt, servers)
-	}
-
-	return grpCk.Get(key)
 }
 
 // Put a key to a shard group.
@@ -78,21 +87,29 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	config := ck.sck.Query()
-	shard  := shardcfg.Key2Shard(key)
-	
-	gid, servers, ok := config.GidServers(shard)
+	for {
+		config := ck.sck.Query()
+		shard  := shardcfg.Key2Shard(key)
 
-	if !ok {
-		DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
-		return rpc.ErrWrongGroup
+		gid, servers, ok := config.GidServers(shard)
+
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
+			return rpc.ErrWrongGroup
+		}
+
+		grpCk, ok := ck.shardgrpCks[gid]
+
+		if !ok {
+			grpCk = shardgrp.MakeClerk(ck.clnt, servers)
+		}
+
+		err := grpCk.Put(key, value, version)
+
+		if err != rpc.ErrWrongGroup {
+			return err
+		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
-
-	grpCk, ok := ck.shardgrpCks[gid]
-
-	if !ok {
-		grpCk = shardgrp.MakeClerk(ck.clnt, servers)
-	}
-
-	return grpCk.Put(key, value, version)
 }

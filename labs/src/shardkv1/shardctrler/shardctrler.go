@@ -5,6 +5,7 @@ package shardctrler
 //
 
 import (
+	"sync"
 
 	"6.5840/kvsrv1"
 	"6.5840/kvtest1"
@@ -21,6 +22,7 @@ type ShardCtrler struct {
 	killed int32 // set by Kill()
 
 	// Your data here.
+	mu sync.Mutex
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
@@ -54,6 +56,11 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
+	sck.mu.Lock()
+	defer sck.mu.Unlock()
+
+	sck.
+	// determine which shardgrp to need to change?
 }
 
 
