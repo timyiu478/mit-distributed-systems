@@ -9,7 +9,6 @@ package shardkv
 //
 
 import (
-	"time"
 	"fmt"
 	"sync"
 
@@ -76,8 +75,6 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if err != rpc.ErrWrongGroup {
 			return val, ver, err
 		}
-
-		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
 }
 
@@ -109,7 +106,5 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		if err != rpc.ErrWrongGroup {
 			return err
 		}
-
-		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
 }

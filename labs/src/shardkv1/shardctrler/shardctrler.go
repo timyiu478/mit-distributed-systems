@@ -58,6 +58,9 @@ func (sck *ShardCtrler) InitController() {
 // lists shardgrp shardcfg.Gid1 for all shards.
 func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
+	sck.mu.Lock()
+	defer sck.mu.Unlock()
+
 	sck.IKVClerk.Put("config", cfg.String(), 0)
 }
 
@@ -70,7 +73,14 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
 
-	oldConfig := sck.Query()
+	cfgStr, version, err := sck.IKVClerk.Get("config")
+
+	if err != rpc.OK {
+		DPrintf(fmt.Sprintf("SCK: failed to get current config"))
+		return
+	}
+
+	oldConfig := shardcfg.FromString(cfgStr)
 
 	cks := make(map[tester.Tgid]*shardgrp.Clerk)
 
@@ -97,17 +107,32 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 				newShardGrpCk = shardgrp.MakeClerk(sck.clnt, newServers)
 			}
 
-			state, err1 := oldShardGrpCk.FreezeShard(shard, new.Num)
+			state, freezeErr := oldShardGrpCk.FreezeShard(shard, new.Num)
 
-			if err1 == rpc.OK {
-				err2 := newShardGrpCk.InstallShard(shard, state, new.Num)
-				if err2 == rpc.OK {
-					oldShardGrpCk.DeleteShard(shard, new.Num)
+			if freezeErr != rpc.OK {
+				DPrintf(fmt.Sprintf("SCK: failed to freezed shard %d", s))
+				continue
+			}
 
-					sck.IKVClerk.Put("config", new.String(), rpc.Tversion(new.Num))
-				}
+			inShdErr := newShardGrpCk.InstallShard(shard, state, new.Num)
+
+			if inShdErr != rpc.OK {
+				DPrintf(fmt.Sprintf("SCK: failed to install shard %d to group %d", s, newGid))
+				continue
+			}
+
+			delShdErr := oldShardGrpCk.DeleteShard(shard, new.Num)
+
+			if delShdErr != rpc.OK {
+				DPrintf(fmt.Sprintf("SCK: failed to delete shard %d from group %d", s, oldGid))
 			}
 		}
+	}
+
+	putErr := sck.IKVClerk.Put("config", new.String(), version)
+
+	if putErr != rpc.OK {
+		DPrintf(fmt.Sprintf("SCK: fail to Put new config, version is %d", version))
 	}
 }
 
@@ -115,6 +140,9 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 // Return the current configuration
 func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
+	sck.mu.Lock()
+	defer sck.mu.Unlock()
+
 	cfgStr, _, _ := sck.IKVClerk.Get("config")
 
 	return shardcfg.FromString(cfgStr)

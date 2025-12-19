@@ -42,7 +42,7 @@ type KVServer struct {
 	mu 	 		 sync.Mutex
 	dupMu 	 sync.Mutex
 
-	Num  shardcfg.Tnum
+	ShardNums  map[shardcfg.Tshid]shardcfg.Tnum
 
 	Freezed   map[shardcfg.Tshid]bool
 
@@ -105,7 +105,7 @@ func (kv *KVServer) Snapshot() []byte {
 	e.Encode(kv.DupTable)
 	e.Encode(kv.GetReplys)
 	e.Encode(kv.PutReplys)
-	e.Encode(kv.Num)
+	e.Encode(kv.ShardNums)
 	e.Encode(kv.Freezed)
 
 	return w.Bytes()
@@ -141,8 +141,8 @@ func (kv *KVServer) Restore(data []byte) {
 	if d.Decode(&kv.PutReplys) != nil {
 		log.Fatalf("Kv %d: couldn't decode putReplys", kv.me)
 	}
-	if d.Decode(&kv.Num) != nil {
-		log.Fatalf("Kv %d: couldn't decode Num", kv.me)
+	if d.Decode(&kv.ShardNums) != nil {
+		log.Fatalf("Kv %d: couldn't decode ShardNums", kv.me)
 	}
 	if d.Decode(&kv.Freezed) != nil {
 		log.Fatalf("Kv %d: couldn't decode Freezed", kv.me)
@@ -227,8 +227,8 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	defer kv.mu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num <= kv.Num {
-		reply.Num = kv.Num
+	if args.Num <= kv.ShardNums[args.Shard] {
+		reply.Num = kv.ShardNums[args.Shard]
 		reply.Err = rpc.ErrVersion
 		return
 	}
@@ -246,14 +246,14 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 
 func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
 	// reject old RPCs based on Num
-	if args.Num <= kv.Num {
-		reply.Num = kv.Num
+	if args.Num <= kv.ShardNums[args.Shard] {
+		reply.Num = kv.ShardNums[args.Shard]
 		reply.Err = rpc.ErrVersion
 		return
 	}
 
 	kv.Freezed[args.Shard] = true
-	kv.Num = args.Num
+	kv.ShardNums[args.Shard] = args.Num
 
 	// find key-value pairs that belong to shard args.Shard
 	Kvs := make(map[string]ValueWithVersion)
@@ -268,7 +268,7 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	e := labgob.NewEncoder(w)
 	e.Encode(Kvs)
 
-	reply.Num = kv.Num
+	reply.Num = kv.ShardNums[args.Shard]
 	reply.Err = rpc.OK
 	reply.State = w.Bytes()
 }
@@ -280,7 +280,7 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	defer kv.mu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num <= kv.Num {
+	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
@@ -296,12 +296,12 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 
 func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
 	// reject old RPCs based on Num
-	if args.Num <= kv.Num {
+	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
 
-	kv.Num = args.Num
+	kv.ShardNums[args.Shard] = args.Num
 
 	r := bytes.NewBuffer(args.State)
 
@@ -328,7 +328,7 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	defer kv.mu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num != kv.Num || !kv.Freezed[args.Shard] {
+	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
@@ -339,14 +339,12 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		return
 	}
 
-	kv.Freezed[args.Shard] = false
-
 	reply.Err = rep.(shardrpc.DeleteShardReply).Err
 }
 
 func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
 	// reject old RPCs based on Num
-	if args.Num != kv.Num || kv.Freezed[args.Shard] {
+	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
@@ -408,7 +406,8 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.GetReplys = make(map[string]rpc.GetReply)
 	kv.PutReplys = make(map[string]rpc.PutReply)
 
-	kv.Freezed   = make(map[shardcfg.Tshid]bool)
+	kv.Freezed     = make(map[shardcfg.Tshid]bool)
+	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
 	if maxraftstate > -1 {
 		snapshotSize := persister.SnapshotSize()
