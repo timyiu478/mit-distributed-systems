@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"bytes"
-	"maps"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -46,12 +46,11 @@ type KVServer struct {
 
 	Freezed   map[shardcfg.Tshid]bool
 
-	Kvs      map[string]ValueWithVersion
+	Kvs      map[shardcfg.Tshid]map[string]ValueWithVersion
 
-	DupTable    map[string]int // duplicate table; entry per client
+	DupTable    map[shardcfg.Tshid]map[int64]int // duplicate table; entry per client
 
-	GetReplys   map[string]rpc.GetReply
-	PutReplys   map[string]rpc.PutReply
+	LastReplys  map[shardcfg.Tshid]map[int64]interface{}
 }
 
 
@@ -94,6 +93,8 @@ func (kv *KVServer) Snapshot() []byte {
 	// Your code here
 	DPrintf(fmt.Sprintf("Kv %d: snapshot", kv.me)) 
 
+	runtime.GC()
+
 	w := new(bytes.Buffer)
 
 	e := labgob.NewEncoder(w)
@@ -103,8 +104,7 @@ func (kv *KVServer) Snapshot() []byte {
 
 	e.Encode(kv.Kvs)
 	e.Encode(kv.DupTable)
-	e.Encode(kv.GetReplys)
-	e.Encode(kv.PutReplys)
+	e.Encode(kv.LastReplys)
 	e.Encode(kv.ShardNums)
 	e.Encode(kv.Freezed)
 
@@ -125,22 +125,14 @@ func (kv *KVServer) Restore(data []byte) {
 
 	clear(kv.Kvs)
 	clear(kv.DupTable)
-	clear(kv.GetReplys)
-	clear(kv.PutReplys)
+	clear(kv.LastReplys)
 	clear(kv.Freezed)
 
 	if d.Decode(&kv.Kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
 	}
-	if d.Decode(&kv.DupTable) != nil {
-		log.Fatalf("Kv %d: couldn't decode dupTable", kv.me)
-	}
-	if d.Decode(&kv.GetReplys) != nil {
-		log.Fatalf("Kv %d: couldn't decode getReplys", kv.me)
-	}
-	if d.Decode(&kv.PutReplys) != nil {
-		log.Fatalf("Kv %d: couldn't decode putReplys", kv.me)
-	}
+	if d.Decode(&kv.DupTable) != nil { log.Fatalf("Kv %d: couldn't decode dupTable", kv.me) }
+	if d.Decode(&kv.LastReplys) != nil { log.Fatalf("Kv %d: couldn't decode lastReplys", kv.me) }
 	if d.Decode(&kv.ShardNums) != nil {
 		log.Fatalf("Kv %d: couldn't decode ShardNums", kv.me)
 	}
@@ -161,15 +153,15 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	}
 
 	kv.dupMu.Lock()
-	seqNum := kv.DupTable[args.ClientId]
+	seqNum := kv.DupTable[shard][args.ClientId]
 
-	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
-		reply.Err = kv.GetReplys[args.ClientId].Err
-		reply.Value = kv.GetReplys[args.ClientId].Value
-		reply.Version = kv.GetReplys[args.ClientId].Version
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Err
+		reply.Value = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Value
+		reply.Version = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Version
 		kv.dupMu.Unlock()
 		return
 	}
@@ -198,13 +190,13 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	}
 
 	kv.dupMu.Lock()
-	seqNum := kv.DupTable[args.ClientId]
+	seqNum := kv.DupTable[shard][args.ClientId]
 
-	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
-		reply.Err = kv.PutReplys[args.ClientId].Err
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.LastReplys[shard][args.ClientId].(rpc.PutReply).Err
 		kv.dupMu.Unlock()
 		return
 	}
@@ -255,18 +247,10 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	kv.Freezed[args.Shard] = true
 	kv.ShardNums[args.Shard] = args.Num
 
-	// find key-value pairs that belong to shard args.Shard
-	Kvs := make(map[string]ValueWithVersion)
-	for k, v := range kv.Kvs {
-		if shardcfg.Key2Shard(k) == args.Shard {
-			Kvs[k] = v
-		}
-	}
-
 	// encode kvs
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(Kvs)
+	e.Encode(kv.Kvs[args.Shard])
 
 	reply.Num = kv.ShardNums[args.Shard]
 	reply.Err = rpc.OK
@@ -316,7 +300,7 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	kv.dupMu.Lock()
 	defer kv.dupMu.Unlock()
 
-	maps.Copy(kv.Kvs, kvs)
+	kv.Kvs[args.Shard] = kvs
 
 	reply.Err = rpc.OK
 }
@@ -352,13 +336,11 @@ func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	kv.dupMu.Lock()
 	defer kv.dupMu.Unlock()
 
-	// find keys that belong to shard args.Shard
-	// and then delete them
-	for k, _ := range kv.Kvs {
-		if shardcfg.Key2Shard(k) == args.Shard {
-			delete(kv.Kvs, k)
-		}
-	}
+	delete(kv.Kvs, args.Shard)
+	delete(kv.DupTable, args.Shard)
+	delete(kv.LastReplys, args.Shard)
+
+	DPrintf(fmt.Sprintf("Kv %d deleted shard %d", kv.me, args.Shard))
 
 	reply.Err = rpc.OK
 }
@@ -401,10 +383,9 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	// Your code here
 	DPrintf(fmt.Sprintf("Kv %d is starting", kv.me))
 
-	kv.Kvs       = make(map[string]ValueWithVersion)
-  kv.DupTable  = make(map[string]int)
-	kv.GetReplys = make(map[string]rpc.GetReply)
-	kv.PutReplys = make(map[string]rpc.PutReply)
+	kv.Kvs       = make(map[shardcfg.Tshid]map[string]ValueWithVersion)
+  kv.DupTable  = make(map[shardcfg.Tshid]map[int64]int)
+	kv.LastReplys = make(map[shardcfg.Tshid]map[int64]interface{})
 
 	kv.Freezed     = make(map[shardcfg.Tshid]bool)
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
@@ -426,16 +407,19 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.dupMu.Lock()
 	defer kv.dupMu.Unlock()
 
-	seqNum := kv.DupTable[args.ClientId]
+	shard := shardcfg.Key2Shard(args.Key)
+
+	seqNum := kv.DupTable[shard][args.ClientId]
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
-		reply.Err = kv.GetReplys[args.ClientId].Err 
-		reply.Value = kv.GetReplys[args.ClientId].Value
-		reply.Version = kv.GetReplys[args.ClientId].Version
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Err
+		reply.Value = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Value
+		reply.Version = kv.LastReplys[shard][args.ClientId].(rpc.GetReply).Version
 		return
 	}
 
-	vv, ok := kv.Kvs[args.Key]
+
+	vv, ok := kv.Kvs[shard][args.Key]
 
 	if ok {
 		reply.Value = vv.Value
@@ -445,27 +429,43 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 		reply.Err = rpc.ErrNoKey
 	}
 
-	kv.DupTable[args.ClientId] = args.SeqNum
-	kv.GetReplys[args.ClientId] = *reply
+	_, ok2 := kv.DupTable[shard]
+	_, ok3 := kv.LastReplys[shard]
+	if !ok2 {
+		kv.DupTable[shard] = make(map[int64]int)
+	}
+	if !ok3 {
+		kv.LastReplys[shard] = make(map[int64]interface{})
+	}
+
+	kv.DupTable[shard][args.ClientId] = args.SeqNum
+	kv.LastReplys[shard][args.ClientId] = *reply
 }
 
 func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.dupMu.Lock()
 	defer kv.dupMu.Unlock()
 
-	seqNum := kv.DupTable[args.ClientId]
+	shard := shardcfg.Key2Shard(args.Key)
+
+	seqNum := kv.DupTable[shard][args.ClientId]
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
-		reply.Err = kv.PutReplys[args.ClientId].Err
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		reply.Err = kv.LastReplys[shard][args.ClientId].(rpc.PutReply).Err
 		return
 	}
 
-	vv, ok := kv.Kvs[args.Key]
+	_, ok := kv.Kvs[shard]
+	if !ok {
+		kv.Kvs[shard] = make(map[string]ValueWithVersion)
+	}
+
+	vv, ok := kv.Kvs[shard][args.Key]
 
 	if ok && args.Version == vv.Version {
 		vv.Value = args.Value
 		vv.Version += 1
-		kv.Kvs[args.Key] = vv
+		kv.Kvs[shard][args.Key] = vv
 		reply.Err = rpc.OK
 	} else if ok && args.Version != vv.Version {
 			reply.Err = rpc.ErrVersion
@@ -473,12 +473,27 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 		vv := ValueWithVersion{}
 		vv.Value = args.Value
 		vv.Version = 1
-		kv.Kvs[args.Key] = vv
+		kv.Kvs[shard][args.Key] = vv
 		reply.Err = rpc.OK
 	} else {
 		reply.Err = rpc.ErrNoKey
 	}
 
-	kv.DupTable[args.ClientId] = args.SeqNum
-	kv.PutReplys[args.ClientId] = *reply
+	_, ok2 := kv.DupTable[shard]
+	_, ok3 := kv.LastReplys[shard]
+	if !ok2 {
+		kv.DupTable[shard] = make(map[int64]int)
+	}
+	if !ok3 {
+		kv.LastReplys[shard] = make(map[int64]interface{})
+	}
+
+	kv.DupTable[shard][args.ClientId] = args.SeqNum
+	kv.LastReplys[shard][args.ClientId] = *reply
+}
+
+func printAlloc() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Printf("Alloc = %v \n", m.Alloc)
 }

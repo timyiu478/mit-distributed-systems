@@ -3,7 +3,7 @@ package shardgrp
 import (
 	"fmt"
 	"sync"
-	"github.com/google/uuid"
+	"sync/atomic"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/shardkv1/shardcfg"
@@ -11,12 +11,14 @@ import (
 	"6.5840/tester1"
 )
 
+var clientId atomic.Int64
+
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
 	leaderIdx int
-	clientId  string
+	clientId  int64
 	seqNum    int
 	mu        sync.Mutex
 }
@@ -25,7 +27,7 @@ func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	ck.leaderIdx = 0
 	ck.seqNum = 0
-	ck.clientId  = uuid.New().String()
+	ck.clientId  = clientId.Add(1)
 	return ck
 }
 
@@ -35,7 +37,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	defer ck.mu.Unlock()
 
 	ck.seqNum += 1
-	DPrintf(fmt.Sprintf("ck %s: receive Get operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+	DPrintf(fmt.Sprintf("ck %d: receive Get operation, updated seqNum to %d", ck.clientId, ck.seqNum))
 
 	args := &rpc.GetArgs{Key: key, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.GetReply{}
@@ -48,7 +50,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 			reply = &rpc.GetReply{}
 			continue
 		}
-		DPrintf(fmt.Sprintf("ck %s: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
+		DPrintf(fmt.Sprintf("ck %d: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 		return reply.Value, reply.Version, reply.Err
 	}
 }
@@ -60,7 +62,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 	ck.seqNum += 1
 
-	DPrintf(fmt.Sprintf("ck %s: receive Put operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+	DPrintf(fmt.Sprintf("ck %d: receive Put operation, updated seqNum to %d", ck.clientId, ck.seqNum))
 
 	args := &rpc.PutArgs{Key: key, Value: value, Version: version, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.PutReply{}
@@ -79,7 +81,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		}
 
 		if counts[ck.leaderIdx] > 0 && reply.Err == rpc.ErrVersion {
-			DPrintf(fmt.Sprintf("ck %s: receive response of Put operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
+			DPrintf(fmt.Sprintf("ck %d: receive response of Put operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 			return rpc.ErrMaybe
 		}
 		return reply.Err
@@ -108,7 +110,7 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 		}
 
 		if reply.Num > args.Num {
-			DPrintf(fmt.Sprintf("ck %s: Freezeshard reply Num %d > args.Num %d", ck.clientId, reply.Num, args.Num))
+			DPrintf(fmt.Sprintf("ck %d: Freezeshard reply Num %d > args.Num %d", ck.clientId, reply.Num, args.Num))
 			return nil, reply.Err
 		}
 

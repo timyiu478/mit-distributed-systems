@@ -40,10 +40,10 @@ type KVServer struct {
 
 	Kvs      map[string]ValueWithVersion
 
-	DupTable    map[string]int // duplicate table; entry per client
+	DupTable    map[int64]int // duplicate table; entry per client
 
-	GetReplys   map[string]rpc.GetReply
-	PutReplys   map[string]rpc.PutReply
+	GetReplys   map[int64]rpc.GetReply
+	PutReplys   map[int64]rpc.PutReply
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -131,10 +131,10 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.dupMu.Lock()
 	seqNum := kv.DupTable[args.ClientId]
 
-	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
+	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 
 	if args.SeqNum <= seqNum { 
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum)) 
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 		reply.Err = kv.GetReplys[args.ClientId].Err 
 		reply.Value = kv.GetReplys[args.ClientId].Value
 		reply.Version = kv.GetReplys[args.ClientId].Version
@@ -164,10 +164,10 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.dupMu.Lock()
 	seqNum := kv.DupTable[args.ClientId]
 
-	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 		reply.Err = kv.PutReplys[args.ClientId].Err 
 		kv.dupMu.Unlock()
 		return
@@ -209,7 +209,7 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 
 	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Get operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 		reply.Err = kv.GetReplys[args.ClientId].Err 
 		reply.Value = kv.GetReplys[args.ClientId].Value
 		reply.Version = kv.GetReplys[args.ClientId].Version
@@ -240,7 +240,7 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 
 	seqNum := kv.DupTable[args.ClientId]
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %s, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
+		DPrintf(fmt.Sprintf("Kv %d: duplicated Put operation in Log from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
 		reply.Err = kv.PutReplys[args.ClientId].Err 
 		return
 	}
@@ -286,9 +286,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	DPrintf(fmt.Sprintf("Kv %d is starting", kv.me))
 
 	kv.Kvs       = make(map[string]ValueWithVersion)
-  kv.DupTable  = make(map[string]int)
-	kv.GetReplys = make(map[string]rpc.GetReply)
-	kv.PutReplys = make(map[string]rpc.PutReply)
+  kv.DupTable  = make(map[int64]int)
+	kv.GetReplys = make(map[int64]rpc.GetReply)
+	kv.PutReplys = make(map[int64]rpc.PutReply)
 
 	if maxraftstate > -1 {
 		snapshotSize := persister.SnapshotSize()

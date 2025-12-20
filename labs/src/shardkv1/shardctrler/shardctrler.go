@@ -76,7 +76,7 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	cfgStr, version, err := sck.IKVClerk.Get("config")
 
 	if err != rpc.OK {
-		DPrintf(fmt.Sprintf("SCK: failed to get current config"))
+		DPrintf("SCK: failed to get current config")
 		return
 	}
 
