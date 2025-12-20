@@ -17,7 +17,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -34,6 +34,8 @@ type ShardCtrler struct {
 
 	// Your data here.
 	mu sync.Mutex
+
+	cks map[tester.Tgid]*shardgrp.Clerk
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
@@ -41,6 +43,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	sck := &ShardCtrler{clnt: clnt}
 	srv := tester.ServerName(tester.GRP0, 0)
 	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
+	sck.cks = make(map[tester.Tgid]*shardgrp.Clerk)
 	// Your code here.
 	return sck
 }
@@ -82,7 +85,6 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 
 	oldConfig := shardcfg.FromString(cfgStr)
 
-	cks := make(map[tester.Tgid]*shardgrp.Clerk)
 
 	for s := 0; s < shardcfg.NShards; s++ {
 		shard := shardcfg.Tshid(s)
@@ -97,14 +99,16 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 			}
 			DPrintf(fmt.Sprintf("SCK: change shard %d from current gid %d to new gid %d", s, oldGid, newGid))
 
-			oldShardGrpCk, oldOk := cks[oldGid]
-			newShardGrpCk, newOk := cks[newGid]
+			oldShardGrpCk, oldOk := sck.cks[oldGid]
+			newShardGrpCk, newOk := sck.cks[newGid]
 
 			if !oldOk { 
 				oldShardGrpCk = shardgrp.MakeClerk(sck.clnt, oldServers)
+				sck.cks[oldGid] = oldShardGrpCk
 			}
 			if !newOk {
 				newShardGrpCk = shardgrp.MakeClerk(sck.clnt, newServers)
+				sck.cks[newGid] = newShardGrpCk
 			}
 
 			state, freezeErr := oldShardGrpCk.FreezeShard(shard, new.Num)
@@ -142,6 +146,7 @@ func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
+	DPrintf("SCK: Query() is invoked")
 
 	cfgStr, _, _ := sck.IKVClerk.Get("config")
 

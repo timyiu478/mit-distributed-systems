@@ -43,6 +43,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	reply := &rpc.GetReply{}
 
 	for {
+		DPrintf(fmt.Sprintf("ck %d: send Get operation to leader idx %d", ck.clientId, ck.leaderIdx))
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
 		if ret == false || reply.Err == rpc.ErrWrongLeader {

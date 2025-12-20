@@ -146,13 +146,16 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	kv.dupMu.Lock()
+
 	shard := shardcfg.Key2Shard(args.Key)
 	if kv.Freezed[shard] {
+		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
+		kv.dupMu.Unlock()
 		return
 	}
 
-	kv.dupMu.Lock()
 	seqNum := kv.DupTable[shard][args.ClientId]
 
 	DPrintf(fmt.Sprintf("Kv %d: received Get operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
@@ -183,13 +186,16 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	kv.dupMu.Lock()
+
 	shard := shardcfg.Key2Shard(args.Key)
 	if kv.Freezed[shard] {
+		DPrintf(fmt.Sprintf("Kv %d: deny Put operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
+		kv.dupMu.Unlock()
 		return
 	}
 
-	kv.dupMu.Lock()
 	seqNum := kv.DupTable[shard][args.ClientId]
 
 	DPrintf(fmt.Sprintf("Kv %d: received Put operation from client %d, args.seqNum is %d, seqNum is %d", kv.me, args.ClientId, args.SeqNum, seqNum))
@@ -218,12 +224,15 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	kv.dupMu.Lock()
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Num = kv.ShardNums[args.Shard]
 		reply.Err = rpc.ErrVersion
+		kv.dupMu.Unlock()
 		return
 	}
+	kv.dupMu.Unlock()
 
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
@@ -237,6 +246,9 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 }
 
 func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Num = kv.ShardNums[args.Shard]
@@ -263,11 +275,14 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	kv.dupMu.Lock()
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
+		kv.dupMu.Unlock()
 		return
 	}
+	kv.dupMu.Unlock()
 
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
@@ -279,6 +294,9 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 }
 
 func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
@@ -286,6 +304,8 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	}
 
 	kv.ShardNums[args.Shard] = args.Num
+
+	kv.Freezed[args.Shard] = false
 
 	r := bytes.NewBuffer(args.State)
 
@@ -296,9 +316,6 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	if d.Decode(&kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
 	}
-
-	kv.dupMu.Lock()
-	defer kv.dupMu.Unlock()
 
 	kv.Kvs[args.Shard] = kvs
 
@@ -311,11 +328,14 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	kv.dupMu.Lock()
 	// reject old RPCs based on Num
 	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
 		reply.Err = rpc.ErrVersion
+		kv.dupMu.Unlock()
 		return
 	}
+	kv.dupMu.Unlock()
 
 	err, rep := kv.rsm.Submit(*args)
 	if err == rpc.ErrWrongLeader {
@@ -327,14 +347,15 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 }
 
 func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
 	// reject old RPCs based on Num
 	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
 
-	kv.dupMu.Lock()
-	defer kv.dupMu.Unlock()
 
 	delete(kv.Kvs, args.Shard)
 	delete(kv.DupTable, args.Shard)
