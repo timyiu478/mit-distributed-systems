@@ -18,7 +18,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -259,10 +259,12 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	kv.Freezed[args.Shard] = true
 	kv.ShardNums[args.Shard] = args.Num
 
-	// encode kvs
+	// encode
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(kv.Kvs[args.Shard])
+	e.Encode(kv.DupTable[args.Shard])
+	e.Encode(kv.LastReplys[args.Shard])
 
 	reply.Num = kv.ShardNums[args.Shard]
 	reply.Err = rpc.OK
@@ -311,13 +313,23 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 
 	d := labgob.NewDecoder(r)
 
-	var kvs map[string]ValueWithVersion
+	var kvs        map[string]ValueWithVersion
+	var dupTable   map[int64]int
+	var lastReplys map[int64]interface{}
 
 	if d.Decode(&kvs) != nil {
 		log.Fatalf("Kv %d: couldn't decode kvs", kv.me)
 	}
+	if d.Decode(&dupTable) != nil {
+		log.Fatalf("Kv %d: couldn't decode dupTable", kv.me)
+	}
+	if d.Decode(&lastReplys) != nil {
+		log.Fatalf("Kv %d: couldn't decode lastReplys", kv.me)
+	}
 
 	kv.Kvs[args.Shard] = kvs
+	kv.DupTable[args.Shard] = dupTable
+	kv.LastReplys[args.Shard] = lastReplys
 
 	reply.Err = rpc.OK
 }
@@ -397,6 +409,8 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	labgob.Register(shardrpc.InstallShardArgs{})
 	labgob.Register(shardrpc.DeleteShardArgs{})
 	labgob.Register(rsm.Op{})
+	labgob.Register(rpc.GetReply{})
+	labgob.Register(rpc.PutReply{})
 
 	kv := &KVServer{gid: gid, me: me}
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)

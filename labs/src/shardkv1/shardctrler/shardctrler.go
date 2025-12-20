@@ -17,7 +17,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
