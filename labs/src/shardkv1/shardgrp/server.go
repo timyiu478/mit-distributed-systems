@@ -225,8 +225,10 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	defer kv.mu.Unlock()
 
 	kv.dupMu.Lock()
+
 	// reject old RPCs based on Num
-	if args.Num <= kv.ShardNums[args.Shard] {
+	// Note: we accept args.Num == kv.ShardNums[args.Shard]
+	if args.Num < kv.ShardNums[args.Shard] {
 		reply.Num = kv.ShardNums[args.Shard]
 		reply.Err = rpc.ErrVersion
 		kv.dupMu.Unlock()
@@ -250,7 +252,7 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	defer kv.dupMu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num <= kv.ShardNums[args.Shard] {
+	if args.Num < kv.ShardNums[args.Shard] {
 		reply.Num = kv.ShardNums[args.Shard]
 		reply.Err = rpc.ErrVersion
 		return

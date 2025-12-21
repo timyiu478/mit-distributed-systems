@@ -1,6 +1,7 @@
 package shardgrp
 
 import (
+	"time"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.GetReply{}
+			time.Sleep(time.Duration(40) * time.Millisecond)
 			continue
 		}
 		DPrintf(fmt.Sprintf("ck %d: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
@@ -78,6 +80,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
+			time.Sleep(time.Duration(40) * time.Millisecond)
 			continue
 		}
 
@@ -107,6 +110,7 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.FreezeShardReply{}
+			time.Sleep(time.Duration(40) * time.Millisecond)
 			continue
 		}
 
@@ -137,6 +141,7 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.InstallShardReply{}
+			time.Sleep(time.Duration(40) * time.Millisecond)
 			continue
 		}
 
@@ -162,6 +167,7 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.DeleteShardReply{}
+			time.Sleep(time.Duration(40) * time.Millisecond)
 			continue
 		}
 
