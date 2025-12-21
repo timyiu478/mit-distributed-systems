@@ -9,6 +9,7 @@ package shardkv
 //
 
 import (
+	"time"
 	"fmt"
 	"sync"
 
@@ -67,7 +68,10 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		grpCk, ok := ck.shardgrpCks[gid]
 
 		if !ok {
-			grpCk = shardgrp.MakeClerk(ck.clnt, servers)
+			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
+			gck := shardgrp.MakeClerk(ck.clnt, servers)
+			ck.shardgrpCks[gid] = gck
+			grpCk = gck
 		}
 
 		val, ver, err := grpCk.Get(key)
@@ -75,6 +79,8 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if err != rpc.ErrWrongGroup {
 			return val, ver, err
 		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
 }
 
@@ -98,7 +104,10 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		grpCk, ok := ck.shardgrpCks[gid]
 
 		if !ok {
-			grpCk = shardgrp.MakeClerk(ck.clnt, servers)
+			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
+			gck := shardgrp.MakeClerk(ck.clnt, servers)
+			ck.shardgrpCks[gid] = gck
+			grpCk = gck
 		}
 
 		err := grpCk.Put(key, value, version)
@@ -106,5 +115,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		if err != rpc.ErrWrongGroup {
 			return err
 		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
 	}
 }

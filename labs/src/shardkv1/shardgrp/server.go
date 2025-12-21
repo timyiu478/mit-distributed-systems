@@ -18,7 +18,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -125,6 +125,7 @@ func (kv *KVServer) Restore(data []byte) {
 	clear(kv.Kvs)
 	clear(kv.DupTable)
 	clear(kv.LastReplys)
+	clear(kv.ShardNums)
 	clear(kv.Freezed)
 
 	if d.Decode(&kv.Kvs) != nil {
@@ -388,6 +389,7 @@ func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 
 	delete(kv.Kvs, args.Shard)
 	delete(kv.DupTable, args.Shard)
+	delete(kv.ShardNums, args.Shard)
 	delete(kv.LastReplys, args.Shard)
 
 	DPrintf(fmt.Sprintf("Kv %d deleted shard %d", kv.me, args.Shard))
