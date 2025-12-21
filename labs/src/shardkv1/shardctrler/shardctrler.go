@@ -149,7 +149,7 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 
 		if errCount > 0 {
 			DPrintf("SCK: error count > 0 => retry to change config again")
-			time.Sleep(time.Duration(100) * time.Millisecond)
+			time.Sleep(time.Duration(50) * time.Millisecond)
 			continue
 		}
 

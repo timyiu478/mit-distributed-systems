@@ -39,7 +39,6 @@ type KVServer struct {
 	gid  tester.Tgid
 
 	// Your code here
-	mu 	 		 sync.Mutex
 	dupMu 	 sync.Mutex
 
 	ShardNums  map[shardcfg.Tshid]shardcfg.Tnum
@@ -143,8 +142,11 @@ func (kv *KVServer) Restore(data []byte) {
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	if kv.killed() {
+		DPrintf(fmt.Sprintf("Kv %d: deny Get req because it was killed", kv.me))
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
 
 	kv.dupMu.Lock()
 
@@ -176,6 +178,7 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
+
 	reply.Err = rep.(rpc.GetReply).Err
 	reply.Value = rep.(rpc.GetReply).Value
 	reply.Version = rep.(rpc.GetReply).Version
@@ -183,8 +186,11 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	if kv.killed() {
+		DPrintf(fmt.Sprintf("Kv %d: deny Put req because it was killed", kv.me))
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
 
 	kv.dupMu.Lock()
 
@@ -214,6 +220,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
+
 	reply.Err = rep.(rpc.PutReply).Err
 }
 
@@ -221,8 +228,11 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 // shard) and return the key/values stored in that shard.
 func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
 	// Your code here
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	if kv.killed() {
+		DPrintf(fmt.Sprintf("Kv %d: deny FreezeShard req because it was killed", kv.me))
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
 
 	kv.dupMu.Lock()
 
@@ -275,10 +285,13 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 
 // Install the supplied state for the specified shard.
 func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
-	// Your code here
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	if kv.killed() {
+		DPrintf(fmt.Sprintf("Kv %d: deny InstallShard req because it was killed", kv.me))
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
 
+	// Your code here
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
@@ -339,8 +352,11 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 // Delete the specified shard.
 func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
 	// Your code here
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	if kv.killed() {
+		DPrintf(fmt.Sprintf("Kv %d: deny DeleteShard req because it was killed", kv.me))
+		reply.Err = rpc.ErrWrongLeader
+		return
+	}
 
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
@@ -369,7 +385,6 @@ func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		reply.Err = rpc.ErrVersion
 		return
 	}
-
 
 	delete(kv.Kvs, args.Shard)
 	delete(kv.DupTable, args.Shard)
