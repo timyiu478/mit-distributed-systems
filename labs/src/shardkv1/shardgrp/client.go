@@ -47,10 +47,13 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		DPrintf(fmt.Sprintf("ck %d: send Get operation to leader idx %d", ck.clientId, ck.leaderIdx))
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
+		if ret == false {
+			DPrintf(fmt.Sprintf("ck %d: unable to get Get response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.GetReply{}
-			time.Sleep(time.Duration(10) * time.Millisecond)
+			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 		DPrintf(fmt.Sprintf("ck %d: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
@@ -76,11 +79,14 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
 
+		if ret == false {
+			DPrintf(fmt.Sprintf("ck %d: unable to get Put response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+			counts[ck.leaderIdx] += 1
+		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
-			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
-			time.Sleep(time.Duration(10) * time.Millisecond)
+			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 
@@ -100,17 +106,18 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	args := &shardrpc.FreezeShardArgs{Shard: s, Num: num}
 	reply := &shardrpc.FreezeShardReply{}
 
-	counts := make([]int, len(ck.servers))
 
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.FreezeShard", args, reply)
 
+		if ret == false {
+			DPrintf(fmt.Sprintf("ck %d: unable to get FreezeShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
-			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.FreezeShardReply{}
-			time.Sleep(time.Duration(10) * time.Millisecond)
+			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 
@@ -131,17 +138,17 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	args := &shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := &shardrpc.InstallShardReply{}
 
-	counts := make([]int, len(ck.servers))
-
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.InstallShard", args, reply)
 
+		if ret == false {
+			DPrintf(fmt.Sprintf("ck %d: unable to get InstallShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
-			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.InstallShardReply{}
-			time.Sleep(time.Duration(10) * time.Millisecond)
+			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 
@@ -157,17 +164,17 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	args := &shardrpc.DeleteShardArgs{Shard: s, Num: num}
 	reply := &shardrpc.DeleteShardReply{}
 
-	counts := make([]int, len(ck.servers))
-
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.DeleteShard", args, reply)
 
+		if ret == false {
+			DPrintf(fmt.Sprintf("ck %d: unable to get InstallShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
-			if ret == false { counts[ck.leaderIdx] += 1 }
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &shardrpc.DeleteShardReply{}
-			time.Sleep(time.Duration(10) * time.Millisecond)
+			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 
