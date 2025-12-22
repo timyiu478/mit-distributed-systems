@@ -2,24 +2,22 @@ package kvraft
 
 import (
 	"fmt"
-	"time"
-	"math/rand"
 	"sync"
-	"github.com/google/uuid"
+	"sync/atomic"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
 )
 
-var clientGerarator int32
+var clientId atomic.Int64
 
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
 	leaderIdx int
-	clientId  string
+	clientId  int64
 	seqNum    int
 	mu        sync.Mutex
 }
@@ -27,10 +25,9 @@ type Clerk struct {
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	// You'll have to add code here.
- 	rand.Seed(time.Now().UnixNano())
 	ck.leaderIdx = 0
 	ck.seqNum = 0
-	ck.clientId  = uuid.New().String()
+	ck.clientId  = clientId.Add(1)
 	return ck
 }
 
@@ -49,7 +46,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	defer ck.mu.Unlock()
 
 	ck.seqNum += 1
-	DPrintf(fmt.Sprintf("ck %s: receive Get operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+	DPrintf(fmt.Sprintf("ck %d: receive Get operation, updated seqNum to %d", ck.clientId, ck.seqNum))
 
 	args := &rpc.GetArgs{Key: key, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.GetReply{}
@@ -62,7 +59,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 			reply = &rpc.GetReply{}
 			continue
 		}
-		DPrintf(fmt.Sprintf("ck %s: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
+		DPrintf(fmt.Sprintf("ck %d: receive response of Get operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 		return reply.Value, reply.Version, reply.Err
 	}
 
@@ -91,7 +88,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 	ck.seqNum += 1
 
-	DPrintf(fmt.Sprintf("ck %s: receive Put operation, updated seqNum to %d", ck.clientId, ck.seqNum))
+	DPrintf(fmt.Sprintf("ck %d: receive Put operation, updated seqNum to %d", ck.clientId, ck.seqNum))
 
 	args := &rpc.PutArgs{Key: key, Value: value, Version: version, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.PutReply{}
@@ -110,7 +107,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		}
 
 		if counts[ck.leaderIdx] > 0 && reply.Err == rpc.ErrVersion {
-			DPrintf(fmt.Sprintf("ck %s: receive response of Put operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
+			DPrintf(fmt.Sprintf("ck %d: receive response of Put operation, seqNum is %d, leader idx is %d", ck.clientId, ck.seqNum, ck.leaderIdx))
 			return rpc.ErrMaybe
 		}
 		return reply.Err

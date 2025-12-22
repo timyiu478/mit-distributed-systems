@@ -9,10 +9,15 @@ package shardkv
 //
 
 import (
+	"time"
+	"fmt"
+	"sync"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/shardkv1/shardctrler"
+	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
 )
 
@@ -20,6 +25,9 @@ type Clerk struct {
 	clnt *tester.Clnt
 	sck  *shardctrler.ShardCtrler
 	// You will have to modify this struct.
+	mu        sync.Mutex
+
+	shardgrpCks map[tester.Tgid]*shardgrp.Clerk
 }
 
 // The tester calls MakeClerk and passes in a shardctrler so that
@@ -30,6 +38,8 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 		sck:  sck,
 	}
 	// You'll have to add code here.
+	ck.shardgrpCks = make(map[tester.Tgid]*shardgrp.Clerk)
+
 	return ck
 }
 
@@ -41,11 +51,71 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 // calling shardgrp.MakeClerk(ck.clnt, servers).
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	return "", 0, ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	for {
+		config := ck.sck.Query()
+		shard  := shardcfg.Key2Shard(key)
+	
+		gid, servers, ok := config.GidServers(shard)
+
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
+			return "", 0, rpc.ErrWrongGroup
+		}
+
+		grpCk, ok := ck.shardgrpCks[gid]
+
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
+			gck := shardgrp.MakeClerk(ck.clnt, servers)
+			ck.shardgrpCks[gid] = gck
+			grpCk = gck
+		}
+
+		val, ver, err := grpCk.Get(key)
+
+		if err != rpc.ErrWrongGroup {
+			return val, ver, err
+		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
+	}
 }
 
 // Put a key to a shard group.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	for {
+		config := ck.sck.Query()
+		shard  := shardcfg.Key2Shard(key)
+
+		gid, servers, ok := config.GidServers(shard)
+
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
+			return rpc.ErrWrongGroup
+		}
+
+		grpCk, ok := ck.shardgrpCks[gid]
+
+		if !ok {
+			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
+			gck := shardgrp.MakeClerk(ck.clnt, servers)
+			ck.shardgrpCks[gid] = gck
+			grpCk = gck
+		}
+
+		err := grpCk.Put(key, value, version)
+
+		if err != rpc.ErrWrongGroup {
+			return err
+		}
+
+		time.Sleep(time.Duration(20) * time.Millisecond)
+	}
 }
