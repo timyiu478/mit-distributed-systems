@@ -36,7 +36,7 @@ type ShardCtrler struct {
 	// Your data here.
 	mu sync.Mutex
 
-	cks map[tester.Tgid]*shardgrp.Clerk
+	cks map[tester.Tgid]*shardgrp.Clerk // map gid to shard group clerk; assume the map of gid to servers never change
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
