@@ -7,8 +7,7 @@ reference: http://nil.csail.mit.edu/6.824/2020/papers/cops.pdf
 
 ## Novelty
 
-* The first ALPS(Availability, Low Latency, Partition-Tolerance, Scalability) system to achieve non-blocking scalable get transactions that take at most two parallel rounds of intra-datacenter requests.
-* Adding N resources to the system increases aggregate throughput and storage capacity by O(N).
+The first ALPS(Availability, Low Latency, Partition-Tolerance, Scalability) system to achieve non-blocking scalable get transactions that take at most two parallel rounds of intra-datacenter requests.
 
 ## Key Takeaways
 
@@ -70,8 +69,13 @@ Q. Causal+ Consistency vs Linearisability
 * The operations in the Causal+ Consistency model are not totally ordered but in the Linearisability model are.
 * Causal+ Consistency does not guarantee real-time ordering.
 
-
 Q. Any real applications use causal+ consistency model?
+
+AntidoteDB: https://antidotedb.gitbook.io/documentation
+
+Q. Is it possible for COPS to have circular dependencies?
+
+No, it is not possible.
 
 Q. The last sentence in Section 4.3 says a client clears its context after a put, replacing the context with just the put. The text observes "This put depends on all previous key-version pairs and thus is nearer than them." Why does clearing the context and replacing it with just the put make sense? You might think that the client's subsequent puts would need to carry along the dependency information about previous gets. What entity ultimately uses the context information, and why does it not need the information about gets before the last put?
 
