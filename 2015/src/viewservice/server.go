@@ -8,6 +8,14 @@ import "sync"
 import "fmt"
 import "os"
 import "sync/atomic"
+	
+type ServerState int
+
+const (
+    StateOk ServerState = iota
+    StateRestarted
+    StateError
+)
 
 type ViewServer struct {
 	mu       sync.Mutex
@@ -19,19 +27,19 @@ type ViewServer struct {
 	// Your declarations here.
 	// keep track of the most recent time at which the viewservice has heard a Ping from each server
 	lastPings map[string]time.Time
+	// Keep trac of the key/value server of the current view
+	viewNums  map[string]uint
 	// Keep track of the real-time status of primary/backup
-	members   map[string]bool // false -> restarted/failed
+	members   map[string]ServerState
 	// Keep track of the return view
 	viewnum     uint
 	primary     string
 	backup      string
-	primaryLive bool
-	backupLive  bool
 	// keep track of whether the primary for the current view has acknowledged it
-	primaryAcked bool
-
-	
-
+	// Whether the view service is initialized
+	inited       bool
+	// Whether the primary is acknowledged the current view
+	primaryAck   bool
 }
 
 //
@@ -40,23 +48,30 @@ type ViewServer struct {
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
 	// Your code here.
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
 
-	// The primary for the current view has acknowledged it
-	if vs.viewnum == args.Viewnum && args.Me == vs.primary || (vs.viewnum == 0) {
-		vs.primaryAcked = true
-		if vs.viewnum == 0 {
-			vs.viewnum = args.Viewnum
-		}
+	log.Println("Ping from server", args.Me, "view is ", args.Viewnum)
+
+	if !vs.inited && vs.viewnum == 0 && vs.primary == "" {
+		vs.inited = true
+		vs.primaryAck = true
+		vs.viewnum = args.Viewnum
+		log.Println("initialize the view service, the primary should be", args.Me)
+	} else if vs.viewnum == args.Viewnum && vs.primary == args.Me {
+		vs.primaryAck = true
+		log.Println("primary", vs.primary, "is acknowledged view", vs.viewnum)
 	}
 
-	// Update last ping time
 	vs.lastPings[args.Me] = time.Now()
-	vs.members[args.Me] = true
+	vs.members[args.Me] = StateOk
+	vs.viewNums[args.Me] = args.Viewnum
 
-	// Viewnum = 0 represents the server has failed and re-started
-	if args.Viewnum == 0 {
-		vs.members[args.Me] = false
-		log.Println("Server", args.Me, " has failed and re-started")
+	// Viewnum = 0 represents the primary/backup has failed and re-started
+	// The idle servers are safe to restart
+	if args.Viewnum == 0 && (vs.primary == args.Me || vs.backup == args.Me) {
+		vs.members[args.Me] = StateRestarted
+		log.Println("Server", args.Me, " has failed and re-started in view", vs.viewnum)
 	}
 
 	vs.changeView()
@@ -97,10 +112,10 @@ func (vs *ViewServer) tick() {
 	defer vs.mu.Unlock()
 
 	for server, lastPing := range vs.lastPings {
-		vs.members[server] = true
 		if lastPing.Add(PingInterval).Before(time.Now()) {
 			delete(vs.lastPings, server)
-			vs.members[server] = false
+			delete(vs.members, server)
+			vs.members[server] = StateError
 			log.Println("Server", server, "has no ping")
 		}
 	}
@@ -135,11 +150,13 @@ func StartServer(me string) *ViewServer {
 	vs.me = me
 	// Your vs.* initializations here.
 	vs.lastPings = make(map[string]time.Time)
-	vs.members = make(map[string]bool)
-	vs.primaryAcked = false
+	vs.viewNums = make(map[string]uint)
+	vs.members = make(map[string]ServerState)
+	vs.inited 			= false
+	vs.primaryAck 	= false
 	vs.primary = ""
 	vs.backup = ""
-	vs.members[""] = false
+	vs.members[""] = StateError
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
@@ -186,71 +203,74 @@ func StartServer(me string) *ViewServer {
 }
 
 //
-// Change view if primary is acknowledged and the primary/backupstatus can change 
+// Change view if primary is acknowledged and the primary/backupstatus change 
 //
 func (vs *ViewServer) changeView() {
 	// No ACK from primary
-	if !vs.primaryAcked {
+	if !vs.primaryAck {
 		return
-	}
-
-	// Count # of failures
-	failCount := 0
-
-	if !vs.members[vs.primary] {
-		failCount += 1
-	}
-	if !vs.members[vs.backup] {
-		failCount += 1
 	}
 
 	// Primary and backup are health
-	if failCount == 0 {
+	if vs.members[vs.primary] == StateOk && vs.members[vs.backup] == StateOk {
 		return
 	}
 
+	log.Println("viewnum is", vs.viewnum,", primary is", vs.primary,", backup is", vs.backup)
+	log.Println("primary state:", vs.members[vs.primary], ", backup state:", vs.members[vs.backup])
+
 	viewChanged := false
 
-  if !vs.members[vs.primary] {
+  if vs.members[vs.primary] != StateOk {
 		// Promote backup as primary
-		if vs.members[vs.backup] {
+		if vs.members[vs.backup] == StateOk {
+			log.Println("Promote backup", vs.backup, "as primary")
 			vs.primary = vs.backup
-			vs.members[vs.primary] = true
-			vs.members[vs.backup] = false
-			vs.backup = ""
+			vs.backup = "" // trigger backup replacement
 			viewChanged = true
-		} else if len(vs.lastPings) > 0 {
-			// Select an idle(restarted) server as primary
-			for server, _ := range vs.lastPings {
+		} else if vs.primary == "" {
+			// Init case: select an idle server as primary
+			for server, state := range vs.members {
+				if state != StateOk { continue }
 				vs.primary = server
-				vs.members[vs.primary] = true
-				break
-			}
-			viewChanged = true
-		} else if vs.primary != "" {
-			vs.primary = ""
-			viewChanged = true
-		}
-	}
-
-	if !vs.members[vs.backup] {
-		// Select an idle(restarted) server as primary
-		if len(vs.lastPings) > 1 {
-			for server, _ := range vs.lastPings {
-				if server == vs.primary { continue }
-				vs.backup = server
-				vs.members[vs.backup] = true
 				viewChanged = true
 				break
 			}
-		} else if vs.backup != "" {
+			// No safe backup after the primary is initialized and failed
+			// In this case, the data is lost
+			// change vs.primary to reflect the failure
+			if !viewChanged && vs.primary != "" {
+				vs.primary = ""
+				viewChanged = true
+			}
+		}
+	}
+
+	// Do not replace restarted backup
+	// Note: (1) restarted backup can't be promoted as new primary
+	//       (2) restarted backup can send Ping(x) where x > 0
+	//           to change it state from StateRestarted to StateOk
+	//           and then this backup can be promoted
+	if vs.members[vs.backup] == StateError {
+		if vs.backup != "" {
 			vs.backup = ""
 			viewChanged = true
+		}
+		if vs.members[vs.primary] == StateOk { // Make sure primary is health
+			// Select an idle server as backup
+			for server, state := range vs.members {
+				if server == vs.primary || state != StateOk { continue }
+				log.Println("Select idle server", server, "as backup in view", vs.viewnum + 1)
+				vs.backup = server
+				viewChanged = true
+				break
+			}
 		}
 	}
 
 	if viewChanged {
+		log.Println("change view from", vs.viewnum, "to", vs.viewnum + 1, "primary is", vs.primary, ", backup is", vs.backup)
 		vs.viewnum += 1
-		vs.primaryAcked = false
+		vs.primaryAck = false
 	}
 }
