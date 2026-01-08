@@ -27,8 +27,8 @@ type ViewServer struct {
 	// Your declarations here.
 	// keep track of the most recent time at which the viewservice has heard a Ping from each server
 	lastPings map[string]time.Time
-	// Keep track of the real-time status of primary/backup
-	members   map[string]ServerState
+	// last Viewnum this server pinged with
+	lastViewnum map[string]uint
 	// Keep track of the return view
 	viewnum     uint
 	primary     string
@@ -51,27 +51,27 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
 	log.Println("Ping from server", args.Me, "view is ", args.Viewnum)
 
-	if !vs.inited && vs.viewnum == 0 && vs.primary == "" {
+	vs.lastPings[args.Me] = time.Now()
+	vs.lastViewnum[args.Me] = args.Viewnum
+
+	if !vs.inited {
+
 		vs.inited = true
-		vs.primaryAck = true
-		vs.viewnum = args.Viewnum
-		log.Println("initialize the view service, the primary should be", args.Me)
-	} else if vs.viewnum == args.Viewnum && vs.primary == args.Me {
+		vs.viewnum = args.Viewnum + 1
+		vs.primary = args.Me
+
+		log.Println("initialized the view service, the primary is", args.Me)
+
+		reply.View.Viewnum = vs.viewnum
+		reply.View.Primary = vs.primary
+		reply.View.Backup = vs.backup
+
+		return nil
+	} 
+
+	if vs.viewnum == args.Viewnum && vs.primary == args.Me {
 		vs.primaryAck = true
 		log.Println("primary", vs.primary, "is acknowledged view", vs.viewnum)
-	} else if args.Viewnum == 0 && vs.primary == args.Me {
-		vs.primaryAck = true
-		log.Println("primary", vs.primary, "is restarted")
-	}
-
-	vs.lastPings[args.Me] = time.Now()
-	vs.members[args.Me] = StateOk
-
-	// Viewnum = 0 represents the primary/backup has failed and re-started
-	// The idle servers are safe to restart
-	if args.Viewnum == 0 && (vs.primary == args.Me || vs.backup == args.Me) {
-		vs.members[args.Me] = StateRestarted
-		log.Println("Server", args.Me, " has failed and re-started in view", vs.viewnum)
 	}
 
 	vs.changeView()
@@ -111,15 +111,6 @@ func (vs *ViewServer) tick() {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
-	for server, lastPing := range vs.lastPings {
-		if lastPing.Add(PingInterval).Before(time.Now()) {
-			delete(vs.lastPings, server)
-			delete(vs.members, server)
-			vs.members[server] = StateError
-			log.Println("Server", server, "has no ping")
-		}
-	}
-
 	vs.changeView()
 }
 
@@ -150,12 +141,11 @@ func StartServer(me string) *ViewServer {
 	vs.me = me
 	// Your vs.* initializations here.
 	vs.lastPings = make(map[string]time.Time)
-	vs.members = make(map[string]ServerState)
+	vs.lastViewnum = make(map[string]uint)
 	vs.inited 			= false
 	vs.primaryAck 	= false
 	vs.primary = ""
 	vs.backup = ""
-	vs.members[""] = StateError
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
@@ -210,59 +200,42 @@ func (vs *ViewServer) changeView() {
 		return
 	}
 
-	// Primary and backup are health
-	if vs.members[vs.primary] == StateOk && vs.members[vs.backup] == StateOk {
-		return
-	}
-
 	log.Println("viewnum is", vs.viewnum,", primary is", vs.primary,", backup is", vs.backup)
-	log.Println("primary state:", vs.members[vs.primary], ", backup state:", vs.members[vs.backup])
 
 	viewChanged := false
 
-  if vs.members[vs.primary] != StateOk {
+	// Handle primary if primary is not alive or is restarted
+	if !vs.isAlive(vs.primary) {
 		// Promote backup as primary
-		if vs.members[vs.backup] == StateOk { // restarted backup can't be promoted as new primary
+		if vs.isAlive(vs.backup) {
 			log.Println("Promote backup", vs.backup, "as primary")
 			vs.primary = vs.backup
 			vs.backup = "" // trigger backup replacement
 			viewChanged = true
-		} else if vs.primary == "" {
-			// Init case: select an idle server as primary
-			for server, state := range vs.members {
-				if state != StateOk { continue }
-				vs.primary = server
-				viewChanged = true
-				break
-			}
-			// No safe backup after the primary is initialized and failed
-			// In this case, the data is lost
-			// change vs.primary to reflect the failure
-			if !viewChanged && vs.primary != "" {
-				vs.primary = ""
-				viewChanged = true
-			}
+		}
+		// No safe backup after the primary is initialized and failed
+	 	// In this case, the data is lost
+	 	// change vs.primary to reflect the failure
+		if !viewChanged && vs.primary != "" {
+			vs.primary = ""
+			viewChanged = true
 		}
 	}
 
-	// Allow re-select the restarted backup as new backup in the immediate next view
-	// This the primary server needs to notice the view change 
-	// and send its entire state to the new backup server for fault-tolerance
-	if vs.members[vs.backup] != StateOk {
+	// Handle Backup if primary is alive(and not restarted) and backup is not alive in current view
+	if vs.isAlive(vs.primary) && !vs.isAlive(vs.backup) {
 		if vs.backup != "" {
 			vs.backup = ""
 			viewChanged = true
 		}
-		if vs.members[vs.primary] == StateOk { // Make sure primary is health. View { P: "", B: "xyz" } is a unreachable state
-			// Select an idle server as backup
-			for server, state := range vs.members {
-				if server == vs.primary || state == StateError { continue }
-				log.Println("Select idle server", server, "as backup in view", vs.viewnum + 1)
-				vs.members[server] = StateOk
-				vs.backup = server
-				viewChanged = true
-				break
-			}
+		for server, _ := range vs.lastPings {
+			// Allow re-select the restarted backup as new backup in the immediate next view
+			if server == vs.primary || vs.isDead(server) { continue }
+			log.Println("Select idle(restarted) server", server, "as backup in view", vs.viewnum + 1)
+			vs.backup = server
+			vs.lastViewnum[server] = vs.viewnum
+			viewChanged = true
+			break
 		}
 	}
 
@@ -271,4 +244,23 @@ func (vs *ViewServer) changeView() {
 		vs.viewnum += 1
 		vs.primaryAck = false
 	}
+}
+
+// 
+// Check if the server is dead
+//
+func (vs *ViewServer) isDead(server string) bool {
+	if server == "" { return true }
+	lastTime, ok := vs.lastPings[server]
+	if !ok { return true }
+  if time.Since(lastTime) > DeadPings*PingInterval { return true }
+	return false
+}
+
+// 
+// Check if the server is alive and not restarted
+//
+func (vs *ViewServer) isAlive(server string) bool {
+	if vs.isDead(server) { return false }
+	return vs.lastViewnum[server] != 0
 }
