@@ -13,6 +13,19 @@ The primary must send Gets as well as Puts to the backup (if there is one), and 
 * If a temporary problem prevents primary to backup communication, the system has only two remedies: change the view to eliminate the backup, or keep trying; neither performs well if such problems are frequent.
 * If a primary fails before acknowledging the view in which it is primary, the view service cannot make progress---it will spin forever and not perform a view change.
 
+## The K/V Server
+
+* All operations should provide at-most-once semantics.
+* A server that isn't the active primary should either not respond to clients, or respond with an error: it should set `GetReply.Err` or `PutReply.Err` to something other than `OK`.
+
+## The Clerk
+
+* Clerk.Get(), Clerk.Put(), and Clerk.Append() should only return when they have completed the operation.
+
+## Related Source code
+
+* The view service source is in [viewservice](viewservice).
+* The primary/backup key/value server source is in [pbservice](pbservice).
 
 ## Details
 

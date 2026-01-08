@@ -27,8 +27,6 @@ type ViewServer struct {
 	// Your declarations here.
 	// keep track of the most recent time at which the viewservice has heard a Ping from each server
 	lastPings map[string]time.Time
-	// Keep trac of the key/value server of the current view
-	viewNums  map[string]uint
 	// Keep track of the real-time status of primary/backup
 	members   map[string]ServerState
 	// Keep track of the return view
@@ -61,11 +59,13 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	} else if vs.viewnum == args.Viewnum && vs.primary == args.Me {
 		vs.primaryAck = true
 		log.Println("primary", vs.primary, "is acknowledged view", vs.viewnum)
+	} else if args.Viewnum == 0 && vs.primary == args.Me {
+		vs.primaryAck = true
+		log.Println("primary", vs.primary, "is restarted")
 	}
 
 	vs.lastPings[args.Me] = time.Now()
 	vs.members[args.Me] = StateOk
-	vs.viewNums[args.Me] = args.Viewnum
 
 	// Viewnum = 0 represents the primary/backup has failed and re-started
 	// The idle servers are safe to restart
@@ -150,7 +150,6 @@ func StartServer(me string) *ViewServer {
 	vs.me = me
 	// Your vs.* initializations here.
 	vs.lastPings = make(map[string]time.Time)
-	vs.viewNums = make(map[string]uint)
 	vs.members = make(map[string]ServerState)
 	vs.inited 			= false
 	vs.primaryAck 	= false
@@ -223,7 +222,7 @@ func (vs *ViewServer) changeView() {
 
   if vs.members[vs.primary] != StateOk {
 		// Promote backup as primary
-		if vs.members[vs.backup] == StateOk {
+		if vs.members[vs.backup] == StateOk { // restarted backup can't be promoted as new primary
 			log.Println("Promote backup", vs.backup, "as primary")
 			vs.primary = vs.backup
 			vs.backup = "" // trigger backup replacement
@@ -246,21 +245,20 @@ func (vs *ViewServer) changeView() {
 		}
 	}
 
-	// Do not replace restarted backup
-	// Note: (1) restarted backup can't be promoted as new primary
-	//       (2) restarted backup can send Ping(x) where x > 0
-	//           to change it state from StateRestarted to StateOk
-	//           and then this backup can be promoted
-	if vs.members[vs.backup] == StateError {
+	// Allow re-select the restarted backup as new backup in the immediate next view
+	// This the primary server needs to notice the view change 
+	// and send its entire state to the new backup server for fault-tolerance
+	if vs.members[vs.backup] != StateOk {
 		if vs.backup != "" {
 			vs.backup = ""
 			viewChanged = true
 		}
-		if vs.members[vs.primary] == StateOk { // Make sure primary is health
+		if vs.members[vs.primary] == StateOk { // Make sure primary is health. View { P: "", B: "xyz" } is a unreachable state
 			// Select an idle server as backup
 			for server, state := range vs.members {
-				if server == vs.primary || state != StateOk { continue }
+				if server == vs.primary || state == StateError { continue }
 				log.Println("Select idle server", server, "as backup in view", vs.viewnum + 1)
+				vs.members[server] = StateOk
 				vs.backup = server
 				viewChanged = true
 				break
