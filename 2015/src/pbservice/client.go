@@ -11,6 +11,8 @@ import "math/big"
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	id int64 // clerk unique identity
+	seqNum int // monotonically increase number for deplication
 }
 
 // this may come in handy.
@@ -25,6 +27,8 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
+	ck.id = nrand()
+	ck.seqNum = 0
 
 	return ck
 }
@@ -73,9 +77,18 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 
-	// Your code here.
+	args := &GetArgs{Key: key}
+	reply := &GetReply{}
+	
+	// TODO
+	server := ""
 
-	return "???"
+	for {
+		ret := call(server, "PBServer.Get", args, reply)
+		if ret == true { break }
+	}
+
+	return reply.Value
 }
 
 //
