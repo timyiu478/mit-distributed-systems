@@ -46,6 +46,12 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
+	if args.Viewnum != pb.view.Viewnum {
+		fmt.Printf("Pb %v: received Get operation from client but thclient and the server are not in the same view", pb.me)
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
 	if pb.view.Primary != pb.me {
 		fmt.Printf("Pb %v: received Get operation from client but this server is not the primary", pb.me)
 		reply.Err = ErrWrongServer
@@ -63,6 +69,12 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	// Your code here.
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
+
+	if args.Viewnum != pb.view.Viewnum {
+		fmt.Printf("Pb %v: received Get operation from client but thclient and the server are not in the same view", pb.me)
+		reply.Err = ErrWrongServer
+		return nil
+	}
 
 	if pb.view.Primary != pb.me {
 		fmt.Printf("Pb %v: received Get operation from client %d but this server is not the primary", pb.me, args.ClientId)
@@ -86,6 +98,9 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 			reply.Err = ErrWrongServer
 			return nil
 		}
+	} else if pb.view.Backup != "" {
+		reply.Err = ErrWrongServer
+		return nil
 	}
 
 	// Put or append
@@ -281,6 +296,7 @@ func (pb *PBServer) forward(args PutAppendArgs) bool {
 	freply := &ForwardReply{}
 
 	fargs.Me = pb.me
+	fargs.View = pb.view
 	fargs.PAArgs = args
 
 	ok := call(pb.view.Backup, "PBServer.Forward", fargs, freply)

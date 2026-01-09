@@ -78,22 +78,17 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-
-	args := &GetArgs{Key: key}
-	reply := &GetReply{}
-	
 	for {
+		args := &GetArgs{Key: key, Viewnum: ck.view.Viewnum}
+		reply := &GetReply{}
 		ret := call(ck.view.Primary, "PBServer.Get", args, reply)
-		if ret == true && reply.Err == OK { break }
+		if ret == true && reply.Err == OK { return reply.Value }
 		view, ok := ck.vs.Get()
 		if ok {
 			ck.view = view
 		}
-		reply = &GetReply{}
 		time.Sleep(viewservice.PingInterval)
 	}
-
-	return reply.Value
 }
 
 //
@@ -104,17 +99,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// Your code here.
 	ck.seqNum += 1
 
-	args := &PutAppendArgs{Key: key, Value: value, Op: op, ClientId: ck.id, SeqNum: ck.seqNum}
-	reply := &PutAppendReply{}
-
 	for {
+		args := &PutAppendArgs{Key: key, Value: value, Op: op, ClientId: ck.id, SeqNum: ck.seqNum, Viewnum: ck.view.Viewnum}
+		reply := &PutAppendReply{}
 		ret := call(ck.view.Primary, "PBServer.PutAppend", args, reply)
 		if ret == true && reply.Err == OK { break }
 		view, ok := ck.vs.Get()
 		if ok {
 			ck.view = view
 		}
-		reply = &PutAppendReply{}
 		time.Sleep(viewservice.PingInterval)
 	}
 }
