@@ -5,7 +5,7 @@ import "fmt"
 import "net/rpc"
 import "log"
 import "time"
-import "viewservice"
+import "lab/viewservice"
 import "sync"
 import "sync/atomic"
 import "os"
@@ -47,7 +47,7 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	defer pb.mu.Unlock()
 
 	if pb.view.Primary != pb.me {
-		DPrintf(fmt.Sprintf("Pb %d: received Get operation from client but this server is not the primary", pb.me))
+		fmt.Printf("Pb %v: received Get operation from client but this server is not the primary", pb.me)
 		reply.Err = ErrWrongServer
 		return nil
 	}
@@ -65,7 +65,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	defer pb.mu.Unlock()
 
 	if pb.view.Primary != pb.me {
-		DPrintf(fmt.Sprintf("Pb %d: received Get operation from client %d but this server is not the primary", pb.me, args.ClientId))
+		fmt.Printf("Pb %v: received Get operation from client %d but this server is not the primary", pb.me, args.ClientId)
 		reply.Err = ErrWrongServer
 		return nil
 	}
@@ -73,14 +73,15 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	seqNum := pb.DupTable[args.ClientId]
 
 	if args.SeqNum <= seqNum {
-		DPrintf(fmt.Sprintf("Pb %d: duplicated PutAppend operation from client %d, args.seqNum is %d, seqNum is %d", pb.me, args.ClientId, args.SeqNum, seqNum))
+		fmt.Printf("Pb %v: duplicated PutAppend operation from client %d, args.seqNum is %d, seqNum is %d", pb.me, args.ClientId, args.SeqNum, seqNum)
 		reply.Err = OK
 		return nil
 	}
 
 	// Forward operation to backup if state transfered
 	if pb.stateTransfered {
-		ok := pb.forward(*args, *reply)
+		fmt.Printf("Pb %v: forward operation to backup %v", pb.me, pb.view.Backup)
+		ok := pb.forward(*args)
 		if !ok {
 			reply.Err = ErrWrongServer
 			return nil
@@ -112,8 +113,7 @@ func (pb *PBServer) tick() {
 	view, err := pb.vs.Ping(pb.view.Viewnum)
 
 	// Unable to get reply from the view server
-	if err {
-		DPrintf(err)
+	if err != nil {
 		return
 	}
 
@@ -132,6 +132,8 @@ func (pb *PBServer) tick() {
 		args.Kvs = pb.Kvs
 		args.DupTable = pb.DupTable
 
+		fmt.Printf("Pb %v: transfer state to backup %v", pb.me, pb.view.Backup)
+
 		ok := call(pb.view.Backup, "PBServer.TransferState", args, reply)
 
 		if ok && reply.Err == OK {
@@ -141,34 +143,36 @@ func (pb *PBServer) tick() {
 
 }
 
-func (pb *PBServer) TransferState(args *TransferStateArgs, reply *TransferStateReply) {
+func (pb *PBServer) TransferState(args *TransferStateArgs, reply *TransferStateReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
 	if args.Me != pb.view.Primary || pb.view.Backup != pb.me {
 		reply.Err = ErrWrongServer
-		return
+		return nil
 	}
 
 	reply.Err = OK
 
 	if pb.stateTransfered {
-		return
+		return nil
 	}
 
 	pb.Kvs = args.Kvs
 	pb.DupTable = args.DupTable
 
 	pb.stateTransfered = true
+
+	return nil
 }
 
-func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) {
+func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
 	if args.Me != pb.view.Primary || pb.view.Backup != pb.me || !pb.stateTransfered {
 		reply.Err = ErrWrongServer
-		return
+		return nil
 	}
 
 	pReply := &PutAppendReply{}
@@ -180,6 +184,8 @@ func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) {
 
 	// Update state for deduplication
 	pb.DupTable[args.PAArgs.ClientId] = args.PAArgs.SeqNum
+
+	return nil
 }
 
 // tell the server to shut itself down.
@@ -270,7 +276,7 @@ func StartServer(vshost string, me string) *PBServer {
 	return pb
 }
 
-func (pb *PBServer) forward(args PutAppendArgs, reply PutAppendReply) bool {
+func (pb *PBServer) forward(args PutAppendArgs) bool {
 	fargs := &ForwardArgs{}
 	freply := &ForwardReply{}
 
@@ -296,10 +302,10 @@ func (pb *PBServer) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	oldval, ok := pb.Kvs[args.Key]
 
 	switch args.Op {
-		case "put":
+		case "Put":
 			pb.Kvs[args.Key] = args.Value
-		case "append":
-			if !ok {
+		case "Append":
+			if ok {
 				pb.Kvs[args.Key] = oldval + args.Value
 			} else {
 				pb.Kvs[args.Key] = args.Value

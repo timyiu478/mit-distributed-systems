@@ -1,11 +1,11 @@
 package pbservice
 
-import "viewservice"
-import "net/rpc"
-import "fmt"
-
 import "crypto/rand"
+import "fmt"
+import "lab/viewservice"
 import "math/big"
+import "net/rpc"
+import "time"
 
 
 type Clerk struct {
@@ -13,6 +13,7 @@ type Clerk struct {
 	// Your declarations here
 	id int64 // clerk unique identity
 	seqNum int // monotonically increase number for deplication
+	view   viewservice.View // cached view
 }
 
 // this may come in handy.
@@ -29,6 +30,7 @@ func MakeClerk(vshost string, me string) *Clerk {
 	// Your ck.* initializations here
 	ck.id = nrand()
 	ck.seqNum = 0
+	ck.view = viewservice.View{0, "", ""}
 
 	return ck
 }
@@ -80,12 +82,15 @@ func (ck *Clerk) Get(key string) string {
 	args := &GetArgs{Key: key}
 	reply := &GetReply{}
 	
-	// TODO
-	server := ""
-
 	for {
-		ret := call(server, "PBServer.Get", args, reply)
-		if ret == true { break }
+		ret := call(ck.view.Primary, "PBServer.Get", args, reply)
+		if ret == true && reply.Err == OK { break }
+		view, ok := ck.vs.Get()
+		if ok {
+			ck.view = view
+		}
+		reply = &GetReply{}
+		time.Sleep(viewservice.PingInterval)
 	}
 
 	return reply.Value
@@ -97,6 +102,21 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	ck.seqNum += 1
+
+	args := &PutAppendArgs{Key: key, Value: value, Op: op, ClientId: ck.id, SeqNum: ck.seqNum}
+	reply := &PutAppendReply{}
+
+	for {
+		ret := call(ck.view.Primary, "PBServer.PutAppend", args, reply)
+		if ret == true && reply.Err == OK { break }
+		view, ok := ck.vs.Get()
+		if ok {
+			ck.view = view
+		}
+		reply = &PutAppendReply{}
+		time.Sleep(viewservice.PingInterval)
+	}
 }
 
 //
