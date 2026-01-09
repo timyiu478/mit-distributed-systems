@@ -58,6 +58,14 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 		return nil
 	}
 
+	// Forward RPC call for acknowleding this server is primary
+	if pb.stateTransfered {
+		if !pb.forward(PutAppendArgs{}, "Get") {
+			reply.Err = ErrWrongServer
+			return nil
+		}
+	}
+
 	pb.get(args, reply)
 
 	return nil
@@ -93,7 +101,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	// Forward operation to backup if state transfered
 	if pb.stateTransfered {
 		fmt.Printf("Pb %v: forward operation to backup %v", pb.me, pb.view.Backup)
-		ok := pb.forward(*args)
+		ok := pb.forward(*args, "PutAppend")
 		if !ok {
 			reply.Err = ErrWrongServer
 			return nil
@@ -187,6 +195,11 @@ func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
 
 	if args.Me != pb.view.Primary || pb.view.Backup != pb.me || !pb.stateTransfered {
 		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if args.Op == "Get" {
+		reply.Err = OK
 		return nil
 	}
 
@@ -291,13 +304,14 @@ func StartServer(vshost string, me string) *PBServer {
 	return pb
 }
 
-func (pb *PBServer) forward(args PutAppendArgs) bool {
+func (pb *PBServer) forward(args PutAppendArgs, op string) bool {
 	fargs := &ForwardArgs{}
 	freply := &ForwardReply{}
 
 	fargs.Me = pb.me
 	fargs.View = pb.view
 	fargs.PAArgs = args
+	fargs.Op = op
 
 	ok := call(pb.view.Backup, "PBServer.Forward", fargs, freply)
 

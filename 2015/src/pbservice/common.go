@@ -45,6 +45,7 @@ type ForwardArgs struct {
 	Me string
 	View viewservice.View
 	PAArgs PutAppendArgs
+	Op string
 }
 
 type ForwardReply struct {
