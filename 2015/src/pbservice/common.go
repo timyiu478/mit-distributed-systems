@@ -28,8 +28,6 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
-	ClientId int64
-	SeqNum   int
 }
 
 type GetReply struct {
@@ -39,3 +37,21 @@ type GetReply struct {
 
 
 // Your RPC definitions here.
+type ForwardArgs struct {
+	Me string
+	PAArgs PutAppendArgs
+}
+
+type ForwardReply struct {
+	Err   Err
+}
+
+type TransferStateArgs struct {
+	Me string
+	Kvs 			map[string]string
+	DupTable	map[int64]int
+}
+
+type TransferStateReply struct {
+	Err   Err
+}
