@@ -205,6 +205,14 @@ func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
 
 	pReply := &PutAppendReply{}
 
+	seqNum := pb.DupTable[args.PAArgs.ClientId]
+
+	if args.PAArgs.SeqNum <= seqNum {
+		fmt.Printf("Pb %v: duplicated Forward operation from primary %d, args.seqNum is %d, seqNum is %d", args.Me, args.PAArgs.ClientId, args.PAArgs.SeqNum, seqNum)
+		reply.Err = OK
+		return nil
+	}
+
 	// Put or append
 	pb.putAppend(&args.PAArgs, pReply)
 
