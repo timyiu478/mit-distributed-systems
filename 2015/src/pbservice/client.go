@@ -1,16 +1,19 @@
 package pbservice
 
-import "viewservice"
-import "net/rpc"
-import "fmt"
-
 import "crypto/rand"
+import "fmt"
+import "lab/viewservice"
 import "math/big"
+import "net/rpc"
+import "time"
 
 
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	id int64 // clerk unique identity
+	seqNum int // monotonically increase number for deplication
+	view   viewservice.View // cached view
 }
 
 // this may come in handy.
@@ -25,6 +28,9 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
+	ck.id = nrand()
+	ck.seqNum = 0
+	ck.view = viewservice.View{0, "", ""}
 
 	return ck
 }
@@ -72,10 +78,17 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-
-	// Your code here.
-
-	return "???"
+	for {
+		args := &GetArgs{Key: key, Viewnum: ck.view.Viewnum}
+		reply := &GetReply{}
+		ret := call(ck.view.Primary, "PBServer.Get", args, reply)
+		if ret == true && reply.Err == OK { return reply.Value }
+		view, ok := ck.vs.Get()
+		if ok {
+			ck.view = view
+		}
+		time.Sleep(viewservice.PingInterval)
+	}
 }
 
 //
@@ -84,6 +97,19 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	ck.seqNum += 1
+
+	for {
+		args := &PutAppendArgs{Key: key, Value: value, Op: op, ClientId: ck.id, SeqNum: ck.seqNum, Viewnum: ck.view.Viewnum}
+		reply := &PutAppendReply{}
+		ret := call(ck.view.Primary, "PBServer.PutAppend", args, reply)
+		if ret == true && reply.Err == OK { break }
+		view, ok := ck.vs.Get()
+		if ok {
+			ck.view = view
+		}
+		time.Sleep(viewservice.PingInterval)
+	}
 }
 
 //

@@ -5,7 +5,7 @@ import "fmt"
 import "net/rpc"
 import "log"
 import "time"
-import "viewservice"
+import "lab/viewservice"
 import "sync"
 import "sync/atomic"
 import "os"
@@ -13,6 +13,14 @@ import "syscall"
 import "math/rand"
 
 
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 type PBServer struct {
 	mu         sync.Mutex
@@ -22,12 +30,43 @@ type PBServer struct {
 	me         string
 	vs         *viewservice.Clerk
 	// Your declarations here.
+	Kvs 							map[string]string
+
+	DupTable    			map[int64]int // duplicate table; entry per client
+
+	view              viewservice.View // cached View
+
+	stateTransfered bool // whether primary transfered state to backup
 }
 
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	if args.Viewnum != pb.view.Viewnum {
+		fmt.Printf("Pb %v: received Get operation from client but thclient and the server are not in the same view", pb.me)
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if pb.view.Primary != pb.me {
+		fmt.Printf("Pb %v: received Get operation from client but this server is not the primary", pb.me)
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	// Forward RPC call for acknowleding this server is primary
+	if pb.stateTransfered {
+		if !pb.forward(PutAppendArgs{}, "Get") {
+			reply.Err = ErrWrongServer
+			return nil
+		}
+	}
+
+	pb.get(args, reply)
 
 	return nil
 }
@@ -36,11 +75,85 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
 
+	if args.Viewnum != pb.view.Viewnum {
+		fmt.Printf("Pb %v: received Get operation from client but thclient and the server are not in the same view", pb.me)
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if pb.view.Primary != pb.me {
+		fmt.Printf("Pb %v: received Get operation from client %d but this server is not the primary", pb.me, args.ClientId)
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	seqNum := pb.DupTable[args.ClientId]
+
+	if args.SeqNum <= seqNum {
+		fmt.Printf("Pb %v: duplicated PutAppend operation from client %d, args.seqNum is %d, seqNum is %d", pb.me, args.ClientId, args.SeqNum, seqNum)
+		reply.Err = OK
+		return nil
+	}
+
+	// Forward operation to backup if state transfered
+	if pb.stateTransfered {
+		fmt.Printf("Pb %v: forward operation to backup %v", pb.me, pb.view.Backup)
+		ok := pb.forward(*args, "PutAppend")
+		if !ok {
+			reply.Err = ErrWrongServer
+			return nil
+		}
+	} else if pb.view.Backup != "" {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	// Put or append
+	pb.putAppend(args, reply)
+
+	// Update state for deduplication
+	pb.DupTable[args.ClientId] = args.SeqNum
 
 	return nil
 }
 
+
+func (pb *PBServer) viewChange() {
+	view, err := pb.vs.Ping(pb.view.Viewnum)
+
+	// Unable to get reply from the view server
+	if err != nil {
+		return
+	}
+
+	// Transite to new view
+	if view.Viewnum != pb.view.Viewnum {
+		pb.stateTransfered = false
+		pb.view = view
+	}
+
+	// Transfer state from primary to new backup
+	if !pb.stateTransfered && view.Primary == pb.me && view.Backup != "" {
+		args := &TransferStateArgs{}
+		reply := &TransferStateReply{}
+
+		args.Me = pb.me
+		args.Viewnum = pb.view.Viewnum
+		args.Kvs = pb.Kvs
+		args.DupTable = pb.DupTable
+
+		fmt.Printf("Pb %v: transfer state to backup %v", pb.me, pb.view.Backup)
+
+		ok := call(pb.view.Backup, "PBServer.TransferState", args, reply)
+
+		if ok && reply.Err == OK {
+			pb.stateTransfered = true
+		}
+	}
+}
 
 //
 // ping the viewserver periodically.
@@ -51,6 +164,68 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 func (pb *PBServer) tick() {
 
 	// Your code here.
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+  pb.viewChange()
+}
+
+func (pb *PBServer) TransferState(args *TransferStateArgs, reply *TransferStateReply) error {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	if args.Viewnum != pb.view.Viewnum || args.Me != pb.view.Primary || pb.view.Backup != pb.me {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	reply.Err = OK
+
+	if pb.stateTransfered {
+		return nil
+	}
+
+	pb.Kvs = args.Kvs
+	pb.DupTable = args.DupTable
+
+	pb.stateTransfered = true
+
+	return nil
+}
+
+func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	if args.Viewnum != pb.view.Viewnum || args.Me != pb.view.Primary || pb.view.Backup != pb.me || !pb.stateTransfered {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+
+	if args.Op == "Get" {
+		reply.Err = OK
+		return nil
+	}
+
+	pReply := &PutAppendReply{}
+
+	seqNum := pb.DupTable[args.PAArgs.ClientId]
+
+	if args.PAArgs.SeqNum <= seqNum {
+		fmt.Printf("Pb %v: duplicated Forward operation from primary %d, args.seqNum is %d, seqNum is %d", args.Me, args.PAArgs.ClientId, args.PAArgs.SeqNum, seqNum)
+		reply.Err = OK
+		return nil
+	}
+
+	// Put or append
+	pb.putAppend(&args.PAArgs, pReply)
+
+	reply.Err = pReply.Err
+
+	// Update state for deduplication
+	pb.DupTable[args.PAArgs.ClientId] = args.PAArgs.SeqNum
+
+	return nil
 }
 
 // tell the server to shut itself down.
@@ -84,6 +259,10 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	// Your pb.* initializations here.
+	pb.Kvs = make(map[string]string)
+	pb.DupTable = make(map[int64]int)
+	pb.view = viewservice.View{0, "", ""}
+	pb.stateTransfered = false
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
@@ -135,4 +314,63 @@ func StartServer(vshost string, me string) *PBServer {
 	}()
 
 	return pb
+}
+
+func (pb *PBServer) forward(args PutAppendArgs, op string) bool {
+
+	// must wait for the backup 
+	for {
+		fargs := &ForwardArgs{}
+		freply := &ForwardReply{}
+
+		fargs.Me = pb.me
+		fargs.Viewnum = pb.view.Viewnum
+		fargs.PAArgs = args
+		fargs.Op = op
+
+		ok := call(pb.view.Backup, "PBServer.Forward", fargs, freply)
+ 
+		if !ok {
+			time.Sleep(viewservice.PingInterval)
+			pb.viewChange()
+			// still have backup and 
+			// backup ACKed that it received the state from the primary
+			if pb.stateTransfered {
+				continue
+			}
+			// no backup
+			if pb.view.Backup == "" {
+				return true
+			}
+		}
+
+    return ok && freply.Err == OK
+	}
+}
+
+func (pb *PBServer) get(args *GetArgs, reply *GetReply) {
+	val, ok := pb.Kvs[args.Key]
+	if ok {
+		reply.Err   = OK
+		reply.Value = val
+		return
+	}
+	reply.Err   = ErrNoKey
+}
+
+func (pb *PBServer) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	oldval, ok := pb.Kvs[args.Key]
+
+	switch args.Op {
+		case "Put":
+			pb.Kvs[args.Key] = args.Value
+		case "Append":
+			if ok {
+				pb.Kvs[args.Key] = oldval + args.Value
+			} else {
+				pb.Kvs[args.Key] = args.Value
+			}
+	}
+
+	reply.Err = OK
 }
