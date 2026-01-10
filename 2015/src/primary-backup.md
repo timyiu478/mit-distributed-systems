@@ -8,6 +8,10 @@
 
 ![](assets/forward_rpc_dedup.png)
 
+What if the primary does not always wait for the response from the backup? The data inconsistency between primary and backup is possible.
+
+![](assets/what_if_the_primary_does_not_always_wait_for_the_response_from_the_backup.png)
+
 ## View Change Example
 
 ![](assets/view_change_example.png)
