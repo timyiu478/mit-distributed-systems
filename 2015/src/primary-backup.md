@@ -42,3 +42,7 @@ The primary must send Gets as well as Puts to the backup (if there is one), and 
 ## Details
 
 http://nil.csail.mit.edu/6.824/2015/labs/lab-2.html
+
+## Test Results
+
+
