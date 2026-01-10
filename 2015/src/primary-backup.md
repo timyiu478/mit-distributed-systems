@@ -2,7 +2,15 @@
 
 ## Implementation Tips
 
-* forward client requests(**Get** and PutAppend) from primary to backup
+1. forward client requests(**Get** and PutAppend) from primary to backup
+2. the forward RPC (from primary to backup) also needs duplicate detection
+3. the forward RPC must wait for the response from the (new) backup
+
+![](assets/forward_rpc_dedup.png)
+
+## View Change Example
+
+![](assets/view_change_example.png)
 
 ## Split Brain Prevention
 

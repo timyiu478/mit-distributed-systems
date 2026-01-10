@@ -121,18 +121,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 }
 
 
-//
-// ping the viewserver periodically.
-// if view changed:
-//   transition to new view.
-//   manage transfer of state from primary to new backup.
-//
-func (pb *PBServer) tick() {
-
-	// Your code here.
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
-
+func (pb *PBServer) viewChange() {
 	view, err := pb.vs.Ping(pb.view.Viewnum)
 
 	// Unable to get reply from the view server
@@ -164,7 +153,21 @@ func (pb *PBServer) tick() {
 			pb.stateTransfered = true
 		}
 	}
+}
 
+//
+// ping the viewserver periodically.
+// if view changed:
+//   transition to new view.
+//   manage transfer of state from primary to new backup.
+//
+func (pb *PBServer) tick() {
+
+	// Your code here.
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+  pb.viewChange()
 }
 
 func (pb *PBServer) TransferState(args *TransferStateArgs, reply *TransferStateReply) error {
@@ -314,17 +317,35 @@ func StartServer(vshost string, me string) *PBServer {
 }
 
 func (pb *PBServer) forward(args PutAppendArgs, op string) bool {
-	fargs := &ForwardArgs{}
-	freply := &ForwardReply{}
 
-	fargs.Me = pb.me
-	fargs.Viewnum = pb.view.Viewnum
-	fargs.PAArgs = args
-	fargs.Op = op
+	// must wait for the backup 
+	for {
+		fargs := &ForwardArgs{}
+		freply := &ForwardReply{}
 
-	ok := call(pb.view.Backup, "PBServer.Forward", fargs, freply)
+		fargs.Me = pb.me
+		fargs.Viewnum = pb.view.Viewnum
+		fargs.PAArgs = args
+		fargs.Op = op
 
-	return ok && freply.Err == OK
+		ok := call(pb.view.Backup, "PBServer.Forward", fargs, freply)
+ 
+		if !ok {
+			time.Sleep(viewservice.PingInterval)
+			pb.viewChange()
+			// still have backup and 
+			// backup ACKed that it received the state from the primary
+			if pb.stateTransfered {
+				continue
+			}
+			// no backup
+			if pb.view.Backup == "" {
+				return true
+			}
+		}
+
+    return ok && freply.Err == OK
+	}
 }
 
 func (pb *PBServer) get(args *GetArgs, reply *GetReply) {
