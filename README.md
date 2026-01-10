@@ -11,6 +11,7 @@ My completed projects at a glance:
 | 1 | A at-most-once linearisable key-value store | A key/value server for a single machine that ensures that each *Put* operation is executed at-most-once despite network failures and that the operations are linearizable.  | [Here](labs/src/kvsrv1) | `At-most-once semantics`, `Linearisability`, `KV-Store` |
 | 2 | **Raft** | A replicated state machine protocol for fault-tolerance  | [Here](labs/src/raft1) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
 | 3 | Fault-tolerant Key/Value Service |  A fault-tolerant key/value storage service using your Raft library | [Here](labs/src/kvraft1) | `Raft`, `Replicated State Machine`, `Snapshot`, `KV-Store`  |
+| 4 | Primary-Backup Key/Value Service | A primary/backup replication, assisted by a view service that decides which machines are alive and allows the system to have strong consistency in the presence of a network partition | [Here](2015/src/primary-backup.md) | `Primary-Backup`, `View Service`, `KV-Store`  |
 
 # Readings
 
