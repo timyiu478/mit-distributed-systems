@@ -1,7 +1,5 @@
 package pbservice
 
-import "lab/viewservice"
-
 const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
@@ -43,7 +41,7 @@ type GetReply struct {
 // Your RPC definitions here.
 type ForwardArgs struct {
 	Me string
-	View viewservice.View
+	Viewnum   uint 
 	PAArgs PutAppendArgs
 	Op string
 }
@@ -54,7 +52,7 @@ type ForwardReply struct {
 
 type TransferStateArgs struct {
 	Me string
-	View viewservice.View
+	Viewnum   uint 
 	Kvs 			map[string]string
 	DupTable	map[int64]int
 }

@@ -152,6 +152,7 @@ func (pb *PBServer) tick() {
 		reply := &TransferStateReply{}
 
 		args.Me = pb.me
+		args.Viewnum = pb.view.Viewnum
 		args.Kvs = pb.Kvs
 		args.DupTable = pb.DupTable
 
@@ -170,7 +171,7 @@ func (pb *PBServer) TransferState(args *TransferStateArgs, reply *TransferStateR
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
-	if args.Me != pb.view.Primary || pb.view.Backup != pb.me {
+	if args.Viewnum != pb.view.Viewnum || args.Me != pb.view.Primary || pb.view.Backup != pb.me {
 		reply.Err = ErrWrongServer
 		return nil
 	}
@@ -193,7 +194,7 @@ func (pb *PBServer) Forward(args *ForwardArgs, reply *ForwardReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
-	if args.Me != pb.view.Primary || pb.view.Backup != pb.me || !pb.stateTransfered {
+	if args.Viewnum != pb.view.Viewnum || args.Me != pb.view.Primary || pb.view.Backup != pb.me || !pb.stateTransfered {
 		reply.Err = ErrWrongServer
 		return nil
 	}
@@ -317,7 +318,7 @@ func (pb *PBServer) forward(args PutAppendArgs, op string) bool {
 	freply := &ForwardReply{}
 
 	fargs.Me = pb.me
-	fargs.View = pb.view
+	fargs.Viewnum = pb.view.Viewnum
 	fargs.PAArgs = args
 	fargs.Op = op
 
