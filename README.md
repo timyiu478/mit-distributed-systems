@@ -4,6 +4,9 @@
 
 # Hands-On Programming Projects
 
+> [!IMPORTANT]
+> The code here is offered as a learning aid to help you build intuition and see one possible way of solving the problem. Readers are strongly encouraged to engage actively with the material and develop their own independent implementations.
+
 My completed projects at a glance:
 
 | # | Title | Description | Link | Tags |
@@ -26,3 +29,4 @@ My writeups at a glance:
 | 5 | Principles of Computer System Design An Introduction - Chapter 9 | Two Phase Commit is a well known protocol to solve atomicity problem in distributed transaction | [Here](papers/write-ups/dtx.md) | `Distributed Transaction`, `Two-Phrase Commit`, `Serializability`, `Atomicity` |
 | 6 | Spanner: Google’s Globally-Distributed Database | The first system to distribute data at global scale and support externally-consistent distributed transactions. | [Here](papers/write-ups/spanner.md) | `Database`, `Distributed Transaction`, `Global Storage` |
 | 7 | Scaling Memcache at Facebook | Leverages memcached as a building block to construct and scale a distributed key-value store that supports the world’s largest social network | [Here](papers/write-ups/memcached.md) | `Cache`, `Memcached`, `Eventual Consistenncy` |
+| 8 | Paxos Made Simple | A consensus algorithm that a value v is chosen the moment some proposal (n, v) is accepted by a majority of acceptors | [Here](papers/write-ups/paxos.md) | `Consensus` |
