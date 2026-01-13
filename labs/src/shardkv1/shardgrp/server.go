@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 
 	"6.5840/kvraft1/rsm"
@@ -229,6 +230,8 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 		return
 	}
 
+	DPrintf(fmt.Sprintf("Kv %d: freezing shard %d", kv.me, args.Shard))
+
 	kv.dupMu.Lock()
 
 	// reject old RPCs based on Num
@@ -276,6 +279,8 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	reply.Num = kv.ShardNums[args.Shard]
 	reply.Err = rpc.OK
 	reply.State = w.Bytes()
+
+	DPrintf(fmt.Sprintf("Kv %d: freezed shard %d", kv.me, args.Shard))
 }
 
 // Install the supplied state for the specified shard.
@@ -285,6 +290,8 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
+
+	DPrintf(fmt.Sprintf("Kv %d: installing shard %d", kv.me, args.Shard))
 
 	// Your code here
 	kv.dupMu.Lock()
@@ -342,6 +349,8 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	kv.LastReplys[args.Shard] = lastReplys
 
 	reply.Err = rpc.OK
+
+	DPrintf(fmt.Sprintf("Kv %d: installed shard %d", kv.me, args.Shard))
 }
 
 // Delete the specified shard.
@@ -352,6 +361,8 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		reply.Err = rpc.ErrWrongLeader
 		return
 	}
+
+	DPrintf(fmt.Sprintf("Kv %d: deleting shard %d", kv.me, args.Shard))
 
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
@@ -369,6 +380,8 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	}
 
 	reply.Err = rep.(shardrpc.DeleteShardReply).Err
+
+	DPrintf(fmt.Sprintf("Kv %d: deleted shard %d", kv.me, args.Shard))
 }
 
 func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
@@ -409,6 +422,17 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kv *KVServer) report() {
+	kv.dupMu.Lock()
+	defer kv.dupMu.Unlock()
+
+
+	for s := 0; s < shardcfg.NShards; s++ {
+		f := kv.Freezed[shardcfg.Tshid(s)]
+		DPrintf(fmt.Sprintf("Kv %d report: shard %d is freezed = %t", kv.me, s, f))
+	}
+}
+
 // StartShardServerGrp starts a server for shardgrp `gid`.
 //
 // StartShardServerGrp() and MakeRSM() must return quickly, so they should
@@ -438,6 +462,10 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.Freezed     = make(map[shardcfg.Tshid]bool)
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
+	for s := 0; s < shardcfg.NShards; s++ {
+		kv.Freezed[shardcfg.Tshid(s)] = false
+	}
+
 	if maxraftstate > -1 {
 		snapshotSize := persister.SnapshotSize()
 
@@ -448,6 +476,11 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 		}
 	}
 
+	go func() {
+		kv.report()
+		time.Sleep(2 * time.Second)
+	}()
+
 	return []tester.IService{kv, kv.rsm.Raft()}
 }
 
@@ -456,6 +489,12 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	defer kv.dupMu.Unlock()
 
 	shard := shardcfg.Key2Shard(args.Key)
+
+	if kv.Freezed[shard] {
+		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
+		reply.Err = rpc.ErrWrongGroup
+		return
+	}
 
 	seqNum := kv.DupTable[shard][args.ClientId]
 	if args.SeqNum <= seqNum {
@@ -494,6 +533,12 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	defer kv.dupMu.Unlock()
 
 	shard := shardcfg.Key2Shard(args.Key)
+
+	if kv.Freezed[shard] {
+		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
+		reply.Err = rpc.ErrWrongGroup
+		return
+	}
 
 	seqNum := kv.DupTable[shard][args.ClientId]
 	if args.SeqNum <= seqNum {
