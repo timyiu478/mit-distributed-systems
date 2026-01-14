@@ -56,6 +56,17 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
+	sck.mu.Lock()
+	defer sck.mu.Unlock()
+
+	oldConfig, _, oldErr := sck.IKVClerk.Get("config")
+	newConfig, _, newErr := sck.IKVClerk.Get("new")
+
+	if newErr == rpc.OK && oldErr == rpc.OK {
+		if newConfig != oldConfig {
+			sck.changeConfigTo(shardcfg.FromString(newConfig))
+		}
+	}
 }
 
 // Called once by the tester to supply the first configuration.  You
@@ -79,6 +90,36 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
+
+	sck.changeConfigTo(new)
+}
+
+
+// Return the current configuration
+func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
+	// Your code here.
+	sck.mu.Lock()
+	defer sck.mu.Unlock()
+	DPrintf("SCK: Query() is invoked")
+
+	cfgStr, _, _ := sck.IKVClerk.Get("config")
+
+	return shardcfg.FromString(cfgStr)
+}
+
+
+func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
+	// Stores the next configuration
+	_, newVer, newErr := sck.IKVClerk.Get("new")
+	if newErr == rpc.ErrNoKey {
+		newVer = 0
+	}
+	err := sck.IKVClerk.Put("new", new.String(), newVer)
+	if err != rpc.OK {
+		DPrintf("SCK: failed to put new config")
+		return
+	}
+
 
 	for {
 
@@ -163,17 +204,3 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 		return
 	}
 }
-
-
-// Return the current configuration
-func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
-	// Your code here.
-	sck.mu.Lock()
-	defer sck.mu.Unlock()
-	DPrintf("SCK: Query() is invoked")
-
-	cfgStr, _, _ := sck.IKVClerk.Get("config")
-
-	return shardcfg.FromString(cfgStr)
-}
-
