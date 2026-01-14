@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 
 
 	"6.5840/kvraft1/rsm"
@@ -422,17 +421,6 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-func (kv *KVServer) report() {
-	kv.dupMu.Lock()
-	defer kv.dupMu.Unlock()
-
-
-	for s := 0; s < shardcfg.NShards; s++ {
-		f := kv.Freezed[shardcfg.Tshid(s)]
-		DPrintf(fmt.Sprintf("Kv %d report: shard %d is freezed = %t", kv.me, s, f))
-	}
-}
-
 // StartShardServerGrp starts a server for shardgrp `gid`.
 //
 // StartShardServerGrp() and MakeRSM() must return quickly, so they should
@@ -475,11 +463,6 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 			kv.Restore(snapshot)
 		}
 	}
-
-	go func() {
-		kv.report()
-		time.Sleep(2 * time.Second)
-	}()
 
 	return []tester.IService{kv, kv.rsm.Raft()}
 }

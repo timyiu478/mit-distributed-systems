@@ -21,6 +21,7 @@ type Clerk struct {
 	leaderIdx int
 	clientId  int64
 	seqNum    int
+	maxRetry  int
 	mu        sync.Mutex
 }
 
@@ -29,6 +30,7 @@ func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 	ck.leaderIdx = 0
 	ck.seqNum = 0
 	ck.clientId  = clientId.Add(1)
+	ck.maxRetry = 2 * len(servers)
 	return ck
 }
 
@@ -43,12 +45,16 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	args := &rpc.GetArgs{Key: key, ClientId: ck.clientId, SeqNum: ck.seqNum}
 	reply := &rpc.GetReply{}
 
+	noResCounts := 0
+
 	for {
 		DPrintf(fmt.Sprintf("ck %d: send Get operation to leader idx %d", ck.clientId, ck.leaderIdx))
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Get", args, reply)
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get Get response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+			noResCounts += 1
+			if noResCounts > ck.maxRetry { return "", 0, rpc.ErrWrongGroup }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
@@ -75,6 +81,8 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 	counts := make([]int, len(ck.servers))
 
+	noResCounts := 0
+
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.Put", args, reply)
@@ -82,6 +90,8 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get Put response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
 			counts[ck.leaderIdx] += 1
+			noResCounts += 1
+			if noResCounts > ck.maxRetry { return rpc.ErrMaybe }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
@@ -106,6 +116,7 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	args := &shardrpc.FreezeShardArgs{Shard: s, Num: num}
 	reply := &shardrpc.FreezeShardReply{}
 
+	noResCounts := 0
 
 	for {
 		server := ck.servers[ck.leaderIdx]
@@ -113,6 +124,8 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get FreezeShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+			noResCounts += 1
+			if noResCounts > ck.maxRetry { return nil, rpc.ErrMaybe }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
@@ -138,12 +151,16 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	args := &shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := &shardrpc.InstallShardReply{}
 
+	noResCounts := 0
+
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.InstallShard", args, reply)
 
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get InstallShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+			noResCounts += 1
+			if noResCounts > ck.maxRetry { return rpc.ErrMaybe }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
@@ -164,12 +181,16 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	args := &shardrpc.DeleteShardArgs{Shard: s, Num: num}
 	reply := &shardrpc.DeleteShardReply{}
 
+	noResCounts := 0
+
 	for {
 		server := ck.servers[ck.leaderIdx]
 		ret := ck.clnt.Call(server, "KVServer.DeleteShard", args, reply)
 
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get InstallShard response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
+			noResCounts += 1
+			if noResCounts > ck.maxRetry { return rpc.ErrMaybe }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader { 
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
