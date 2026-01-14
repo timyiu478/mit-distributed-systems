@@ -43,7 +43,8 @@ type KVServer struct {
 
 	ShardNums  map[shardcfg.Tshid]shardcfg.Tnum
 
-	Freezed   map[shardcfg.Tshid]bool
+	Freezed   		map[shardcfg.Tshid]bool
+	Installed   	map[shardcfg.Tshid]bool
 
 	Kvs      map[shardcfg.Tshid]map[string]ValueWithVersion
 
@@ -106,6 +107,7 @@ func (kv *KVServer) Snapshot() []byte {
 	e.Encode(kv.LastReplys)
 	e.Encode(kv.ShardNums)
 	e.Encode(kv.Freezed)
+	e.Encode(kv.Installed)
 
 	return w.Bytes()
 }
@@ -127,12 +129,14 @@ func (kv *KVServer) Restore(data []byte) {
 	clear(kv.LastReplys)
 	clear(kv.ShardNums)
 	clear(kv.Freezed)
+	clear(kv.Installed)
 
 	if d.Decode(&kv.Kvs) != nil { log.Fatalf("Kv %d: couldn't decode kvs", kv.me) }
 	if d.Decode(&kv.DupTable) != nil { log.Fatalf("Kv %d: couldn't decode dupTable", kv.me) }
 	if d.Decode(&kv.LastReplys) != nil { log.Fatalf("Kv %d: couldn't decode lastReplys", kv.me) }
 	if d.Decode(&kv.ShardNums) != nil { log.Fatalf("Kv %d: couldn't decode ShardNums", kv.me) }
 	if d.Decode(&kv.Freezed) != nil { log.Fatalf("Kv %d: couldn't decode Freezed", kv.me) }
+	if d.Decode(&kv.Installed) != nil { log.Fatalf("Kv %d: couldn't decode Installed", kv.me) }
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -266,6 +270,7 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	}
 
 	kv.Freezed[args.Shard] = true
+	kv.Installed[args.Shard] = false
 	kv.ShardNums[args.Shard] = args.Num
 
 	// encode
@@ -300,7 +305,7 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		kv.dupMu.Unlock()
 		return
 	}
-	if !kv.Freezed[args.Shard] {
+	if kv.Installed[args.Shard] {
 		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
 		reply.Err = rpc.ErrWrongGroup
 		kv.dupMu.Unlock()
@@ -327,7 +332,7 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		return
 	}
 
-	if !kv.Freezed[args.Shard] {
+	if kv.Installed[args.Shard] {
 		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
 		reply.Err = rpc.ErrWrongGroup
 		return
@@ -336,6 +341,7 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	kv.ShardNums[args.Shard] = args.Num
 
 	kv.Freezed[args.Shard] = false
+	kv.Installed[args.Shard] = true
 
 	r := bytes.NewBuffer(args.State)
 
@@ -463,7 +469,7 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
 	for s := 0; s < shardcfg.NShards; s++ {
-		kv.Freezed[shardcfg.Tshid(s)] = true
+		kv.Freezed[shardcfg.Tshid(s)] = false
 	}
 
 	if maxraftstate > -1 {
