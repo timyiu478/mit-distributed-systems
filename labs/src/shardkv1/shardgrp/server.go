@@ -300,6 +300,12 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		kv.dupMu.Unlock()
 		return
 	}
+	if !kv.Freezed[args.Shard] {
+		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
+		reply.Err = rpc.ErrWrongGroup
+		kv.dupMu.Unlock()
+		return
+	}
 	kv.dupMu.Unlock()
 
 	err, rep := kv.rsm.Submit(*args)
@@ -318,6 +324,12 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	// reject old RPCs based on Num
 	if args.Num <= kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	if !kv.Freezed[args.Shard] {
+		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
+		reply.Err = rpc.ErrWrongGroup
 		return
 	}
 
@@ -451,7 +463,7 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
 	for s := 0; s < shardcfg.NShards; s++ {
-		kv.Freezed[shardcfg.Tshid(s)] = false
+		kv.Freezed[shardcfg.Tshid(s)] = true
 	}
 
 	if maxraftstate > -1 {
