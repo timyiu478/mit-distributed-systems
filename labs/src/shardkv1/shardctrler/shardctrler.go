@@ -63,7 +63,7 @@ func (sck *ShardCtrler) InitController() {
 	defer sck.mu.Unlock()
 
 	oldConfig, _, oldErr := sck.IKVClerk.Get("config")
-	newConfig, _, newErr := sck.IKVClerk.Get("new")
+	newConfig, _, newErr := sck.IKVClerk.Get("new-config")
 
 	if newErr == rpc.OK && oldErr == rpc.OK {
 		if newConfig != oldConfig {
@@ -126,7 +126,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 		DPrintf("SCK: failed to get stored new config")
 		return
 	}
-	err := sck.IKVClerk.Put("new", new.String(), newVer)
+	err := sck.IKVClerk.Put("new-config", new.String(), newVer)
 	if err != rpc.OK {
 		DPrintf("SCK: failed to put new config")
 		return

@@ -465,7 +465,8 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
   kv.DupTable  = make(map[shardcfg.Tshid]map[int64]int)
 	kv.LastReplys = make(map[shardcfg.Tshid]map[int64]interface{})
 
-	kv.Freezed     = make(map[shardcfg.Tshid]bool)
+	kv.Freezed     	= make(map[shardcfg.Tshid]bool)
+	kv.Installed    = make(map[shardcfg.Tshid]bool)
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
 	for s := 0; s < shardcfg.NShards; s++ {
