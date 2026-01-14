@@ -9,6 +9,7 @@ import (
 	"log"
 	"sync"
 	"time"
+	"slices"
 
 	"6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
@@ -36,7 +37,8 @@ type ShardCtrler struct {
 	// Your data here.
 	mu sync.Mutex
 
-	cks map[tester.Tgid]*shardgrp.Clerk // map gid to shard group clerk; assume the map of gid to servers never change
+	cks 						map[tester.Tgid]*shardgrp.Clerk // map gid to shard group clerk
+	gidToServers		map[tester.Tgid][]string
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
@@ -45,6 +47,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	srv := tester.ServerName(tester.GRP0, 0)
 	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
 	sck.cks = make(map[tester.Tgid]*shardgrp.Clerk)
+	sck.gidToServers = make(map[tester.Tgid][]string)
 	// Your code here.
 	return sck
 }
@@ -113,11 +116,11 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 				oldShardGrpCk, oldOk := sck.cks[oldGid]
 				newShardGrpCk, newOk := sck.cks[newGid]
 
-				if !oldOk {
+				if !oldOk || !slices.Equal(oldServers, sck.gidToServers[oldGid]) {
 					oldShardGrpCk = shardgrp.MakeClerk(sck.clnt, oldServers)
 					sck.cks[oldGid] = oldShardGrpCk
 				}
-				if !newOk {
+				if !newOk || !slices.Equal(newServers, sck.gidToServers[newGid]) {
 					newShardGrpCk = shardgrp.MakeClerk(sck.clnt, newServers)
 					sck.cks[newGid] = newShardGrpCk
 				}

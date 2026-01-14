@@ -12,6 +12,7 @@ import (
 	"time"
 	"fmt"
 	"sync"
+	"slices"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
@@ -28,6 +29,7 @@ type Clerk struct {
 	mu        sync.Mutex
 
 	shardgrpCks map[tester.Tgid]*shardgrp.Clerk
+	gidToServers map[tester.Tgid][]string
 }
 
 // The tester calls MakeClerk and passes in a shardctrler so that
@@ -39,6 +41,7 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 	}
 	// You'll have to add code here.
 	ck.shardgrpCks = make(map[tester.Tgid]*shardgrp.Clerk)
+	ck.gidToServers = make(map[tester.Tgid][]string)
 
 	return ck
 }
@@ -67,10 +70,11 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 		grpCk, ok := ck.shardgrpCks[gid]
 
-		if !ok {
+		if !ok || !slices.Equal(ck.gidToServers[gid], servers) {
 			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
 			gck := shardgrp.MakeClerk(ck.clnt, servers)
 			ck.shardgrpCks[gid] = gck
+			ck.gidToServers[gid] = servers
 			grpCk = gck
 		}
 
@@ -103,10 +107,11 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 		grpCk, ok := ck.shardgrpCks[gid]
 
-		if !ok {
+		if !ok || !slices.Equal(ck.gidToServers[gid], servers) {
 			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
 			gck := shardgrp.MakeClerk(ck.clnt, servers)
 			ck.shardgrpCks[gid] = gck
+			ck.gidToServers[gid] = servers
 			grpCk = gck
 		}
 
