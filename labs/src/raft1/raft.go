@@ -1003,6 +1003,13 @@ func (rf *Raft) committedLogHandler() {
 				rf.deliverCh <- applyMsg
 				rf.lastApplied = i
 			} else {
+				// If we not break the loop immediately when the deliverCh is full,
+				// the following bad secenerio is possible to happen:
+				// Trying to send apply messages that command indexes from 1 to 4
+				// deliverCh buffer size is 2
+				// Time 1: deliverCh: [1, 2]  # 1 and 2 denote the command index
+				// Time 2: skip command index 3 # incorrect!!
+				// Time 3: deliverCh: [2, 4]
 				break
 			}
 		}
