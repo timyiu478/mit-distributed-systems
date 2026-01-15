@@ -18,7 +18,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -333,8 +333,8 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	}
 
 	if kv.Installed[args.Shard] {
-		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
-		reply.Err = rpc.ErrWrongGroup
+		DPrintf(fmt.Sprintf("Kv %d: the shard %d is already installed", kv.me, args.Shard))
+		reply.Err = rpc.OK
 		return
 	}
 
@@ -383,8 +383,14 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
-	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
+	if args.Num != kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
+		kv.dupMu.Unlock()
+		return
+	}
+	if kv.Freezed[args.Shard] {
+		DPrintf(fmt.Sprintf("Kv %d: the shard %d is already deleted", kv.me, args.Shard))
+		reply.Err = rpc.OK
 		kv.dupMu.Unlock()
 		return
 	}
