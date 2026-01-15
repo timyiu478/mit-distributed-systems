@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 	"slices"
+	"sync/atomic"
 
 	"6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
@@ -27,6 +28,8 @@ func DPrintf(format string, a ...interface{}) {
 	}
 }
 
+var shardCtrlerId atomic.Int64
+
 // ShardCtrler for the controller and kv clerk.
 type ShardCtrler struct {
 	clnt *tester.Clnt
@@ -41,6 +44,8 @@ type ShardCtrler struct {
 	gidToServers		map[tester.Tgid][]string
 
 	maxRetryCount   int
+
+	id              int64
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
@@ -51,6 +56,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	sck.cks = make(map[tester.Tgid]*shardgrp.Clerk)
 	sck.gidToServers = make(map[tester.Tgid][]string)
 	sck.maxRetryCount = 5
+	sck.id = shardCtrlerId.Add(1)
 	// Your code here.
 	return sck
 }
@@ -104,7 +110,7 @@ func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
-	DPrintf("SCK: Query() is invoked")
+	DPrintf(fmt.Sprintf("SCK %d: Query() is invoked", sck.id))
 
 	cfgStr, _, _ := sck.IKVClerk.Get("config")
 
@@ -119,16 +125,16 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 		storedCfg := shardcfg.FromString(storedNew)
 		// Note: we allow multiple controllers post the same next configuration
 		if storedCfg.Num > new.Num || storedCfg.Num == new.Num && storedNew != new.String() {
-			DPrintf("SCK: only one controller can post a next configuration for a configuration Num %d", new.Num)
+			DPrintf(fmt.Sprintf("SCK %d: only one controller can post a next configuration for a configuration Num %d", sck.id, new.Num))
 			return
 		}
 	} else {
-		DPrintf("SCK: failed to get stored new config")
+		DPrintf(fmt.Sprintf("SCK %d: failed to get stored new config", sck.id))
 		return
 	}
 	err := sck.IKVClerk.Put("new-config", new.String(), newVer)
 	if err != rpc.OK {
-		DPrintf("SCK: failed to put new config")
+		DPrintf(fmt.Sprintf("SCK %d: failed to put new config", sck.id))
 		return
 	}
 
@@ -137,14 +143,14 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 	for {
 
 		if retryCount > sck.maxRetryCount {
-			DPrintf("SCK: exceed max retry count")
+			DPrintf(fmt.Sprintf("SCK %d: exceed max retry count", sck.id))
 			return
 		}
 
 		cfgStr, version, err := sck.IKVClerk.Get("config")
 
 		if err != rpc.OK {
-			DPrintf("SCK: failed to get current config")
+			DPrintf(fmt.Sprintf("SCK %d: failed to get current config", sck.id))
 			return
 		}
 
@@ -153,12 +159,12 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 		storedNew, _, newErr := sck.IKVClerk.Get("new-config")
 
 		if newErr != rpc.OK || storedNew != new.String() {
-			DPrintf("SCK: stored new config is overwritten")
+			DPrintf(fmt.Sprintf("SCK %d: stored new config is overwritten", sck.id))
 			return
 		}
 
 		if oldConfig.Num >= new.Num {
-			DPrintf("SCK: current config Num (%d) >= new config Num (%d)", oldConfig.Num, new.Num)
+			DPrintf(fmt.Sprintf("SCK %d: current config Num (%d) >= new config Num (%d)", sck.id, oldConfig.Num, new.Num))
 			return
 		}
 
@@ -174,10 +180,10 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 
 			if newOk && oldOk {
 				if oldGid == newGid {
-					DPrintf(fmt.Sprintf("SCK: the gid of shard %d remains unchange", s))
+					DPrintf(fmt.Sprintf("SCK %d: the gid of shard %d remains unchange", sck.id, s))
 					continue
 				}
-				DPrintf(fmt.Sprintf("SCK: change shard %d from current gid %d to new gid %d", s, oldGid, newGid))
+				DPrintf(fmt.Sprintf("SCK %d: change shard %d from current gid %d to new gid %d", sck.id, s, oldGid, newGid))
 
 				oldShardGrpCk, oldOk := sck.cks[oldGid]
 				newShardGrpCk, newOk := sck.cks[newGid]
@@ -194,7 +200,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				state, freezeErr := oldShardGrpCk.FreezeShard(shard, new.Num)
 
 				if freezeErr != rpc.OK {
-					DPrintf(fmt.Sprintf("SCK: failed to freezed shard %d", s))
+					DPrintf(fmt.Sprintf("SCK %d: failed to freezed shard %d", sck.id, s))
 					errCount++
 					retryCount++
 					continue
@@ -203,7 +209,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				inShdErr := newShardGrpCk.InstallShard(shard, state, new.Num)
 
 				if inShdErr != rpc.OK && inShdErr != rpc.ErrVersion {
-					DPrintf(fmt.Sprintf("SCK: failed to install shard %d to group %d, err is %s", s, newGid, inShdErr))
+					DPrintf(fmt.Sprintf("SCK %d: failed to install shard %d to group %d, err is %s", sck.id, s, newGid, inShdErr))
 					errCount++
 					retryCount++
 					continue
@@ -212,7 +218,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				delShdErr := oldShardGrpCk.DeleteShard(shard, new.Num)
 
 				if delShdErr != rpc.OK && delShdErr != rpc.ErrVersion {
-					DPrintf(fmt.Sprintf("SCK: failed to delete shard %d from group %d, err is %s", s, oldGid, delShdErr))
+					DPrintf(fmt.Sprintf("SCK %d: failed to delete shard %d from group %d, err is %s", sck.id, s, oldGid, delShdErr))
 					errCount++
 					retryCount++
 				}
@@ -220,14 +226,14 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 		}
 
 		if errCount > 0 {
-			DPrintf("SCK: error count > 0 => retry to change config again")
+			DPrintf(fmt.Sprintf("SCK %d: error count > 0 => retry to change config again", sck.id))
 			time.Sleep(time.Duration(50) * time.Millisecond)
 			continue
 		}
 
 		putErr := sck.IKVClerk.Put("config", new.String(), version)
 		if putErr != rpc.OK {
-			DPrintf(fmt.Sprintf("SCK: fail to put new config, version is %d", version))
+			DPrintf(fmt.Sprintf("SCK %d: fail to put new config, version is %d", sck.id, version))
 		}
 		return
 	}
