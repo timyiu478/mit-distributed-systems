@@ -43,6 +43,8 @@ type ShardCtrler struct {
 	cks 						map[tester.Tgid]*shardgrp.Clerk // map gid to shard group clerk
 	gidToServers		map[tester.Tgid][]string
 
+	maxRetryCount   int
+
 	id              int64
 }
 
@@ -53,6 +55,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
 	sck.cks = make(map[tester.Tgid]*shardgrp.Clerk)
 	sck.gidToServers = make(map[tester.Tgid][]string)
+	sck.maxRetryCount = 20
 	sck.id = shardCtrlerId.Add(1)
 	// Your code here.
 	return sck
@@ -138,7 +141,14 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 		return
 	}
 
+	retryCount := 0
+
 	for {
+
+		if retryCount > sck.maxRetryCount {
+			DPrintf(fmt.Sprintf("SCK %d: exceed max retry count", sck.id))
+			return
+		}
 
 		cfgStr, version, err := sck.IKVClerk.Get("config")
 
@@ -173,7 +183,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 
 			if newOk && oldOk {
 				if oldGid == newGid {
-					// DPrintf(fmt.Sprintf("SCK %d: the gid of shard %d remains unchange", sck.id, s))
+					DPrintf(fmt.Sprintf("SCK %d: the gid of shard %d remains unchange", sck.id, s))
 					continue
 				}
 				DPrintf(fmt.Sprintf("SCK %d: change shard %d from current gid %d to new gid %d", sck.id, s, oldGid, newGid))
@@ -195,6 +205,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				if freezeErr != rpc.OK {
 					DPrintf(fmt.Sprintf("SCK %d: failed to freezed shard %d, err is %s", sck.id, s, freezeErr))
 					errCount++
+					retryCount++
 					continue
 				}
 
@@ -203,6 +214,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				if inShdErr != rpc.OK {
 					DPrintf(fmt.Sprintf("SCK %d: failed to install shard %d to group %d, err is %s", sck.id, s, newGid, inShdErr))
 					errCount++
+					retryCount++
 					continue
 				}
 
@@ -211,13 +223,14 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				if delShdErr != rpc.OK {
 					DPrintf(fmt.Sprintf("SCK %d: failed to delete shard %d from group %d, err is %s", sck.id, s, oldGid, delShdErr))
 					errCount++
+					retryCount++
 				}
 			}
 		}
 
 		if errCount > 0 {
 			DPrintf(fmt.Sprintf("SCK %d: error count > 0 => retry to change config again", sck.id))
-			time.Sleep(time.Duration(50) * time.Millisecond)
+			time.Sleep(time.Duration(100) * time.Millisecond)
 			continue
 		}
 
