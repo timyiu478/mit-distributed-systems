@@ -43,7 +43,6 @@ type KVServer struct {
 
 	ShardNums  map[shardcfg.Tshid]shardcfg.Tnum
 
-	Freezed   		map[shardcfg.Tshid]bool
 	Installed   	map[shardcfg.Tshid]bool
 
 	Kvs      map[shardcfg.Tshid]map[string]ValueWithVersion
@@ -106,7 +105,6 @@ func (kv *KVServer) Snapshot() []byte {
 	e.Encode(kv.DupTable)
 	e.Encode(kv.LastReplys)
 	e.Encode(kv.ShardNums)
-	e.Encode(kv.Freezed)
 	e.Encode(kv.Installed)
 
 	return w.Bytes()
@@ -128,14 +126,12 @@ func (kv *KVServer) Restore(data []byte) {
 	clear(kv.DupTable)
 	clear(kv.LastReplys)
 	clear(kv.ShardNums)
-	clear(kv.Freezed)
 	clear(kv.Installed)
 
 	if d.Decode(&kv.Kvs) != nil { log.Fatalf("Kv %d: couldn't decode kvs", kv.me) }
 	if d.Decode(&kv.DupTable) != nil { log.Fatalf("Kv %d: couldn't decode dupTable", kv.me) }
 	if d.Decode(&kv.LastReplys) != nil { log.Fatalf("Kv %d: couldn't decode lastReplys", kv.me) }
 	if d.Decode(&kv.ShardNums) != nil { log.Fatalf("Kv %d: couldn't decode ShardNums", kv.me) }
-	if d.Decode(&kv.Freezed) != nil { log.Fatalf("Kv %d: couldn't decode Freezed", kv.me) }
 	if d.Decode(&kv.Installed) != nil { log.Fatalf("Kv %d: couldn't decode Installed", kv.me) }
 }
 
@@ -152,7 +148,7 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.dupMu.Lock()
 
 	shard := shardcfg.Key2Shard(args.Key)
-	if kv.Freezed[shard] {
+	if !kv.Installed[shard] {
 		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
 		kv.dupMu.Unlock()
@@ -196,7 +192,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.dupMu.Lock()
 
 	shard := shardcfg.Key2Shard(args.Key)
-	if kv.Freezed[shard] {
+	if !kv.Installed[shard] {
 		DPrintf(fmt.Sprintf("Kv %d: deny Put operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
 		kv.dupMu.Unlock()
@@ -269,7 +265,6 @@ func (kv *KVServer) freezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 		return
 	}
 
-	kv.Freezed[args.Shard] = true
 	kv.Installed[args.Shard] = false
 	kv.ShardNums[args.Shard] = args.Num
 
@@ -340,7 +335,6 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 
 	kv.ShardNums[args.Shard] = args.Num
 
-	kv.Freezed[args.Shard] = false
 	kv.Installed[args.Shard] = true
 
 	r := bytes.NewBuffer(args.State)
@@ -388,7 +382,7 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		kv.dupMu.Unlock()
 		return
 	}
-	if kv.Freezed[args.Shard] {
+	if !kv.Installed[args.Shard] {
 		DPrintf(fmt.Sprintf("Kv %d: the shard %d is already deleted", kv.me, args.Shard))
 		reply.Err = rpc.OK
 		kv.dupMu.Unlock()
@@ -412,7 +406,7 @@ func (kv *KVServer) deleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	defer kv.dupMu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num != kv.ShardNums[args.Shard] || !kv.Freezed[args.Shard] {
+	if args.Num != kv.ShardNums[args.Shard] || kv.Installed[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
@@ -471,12 +465,16 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
   kv.DupTable  = make(map[shardcfg.Tshid]map[int64]int)
 	kv.LastReplys = make(map[shardcfg.Tshid]map[int64]interface{})
 
-	kv.Freezed     	= make(map[shardcfg.Tshid]bool)
 	kv.Installed    = make(map[shardcfg.Tshid]bool)
 	kv.ShardNums   = make(map[shardcfg.Tshid]shardcfg.Tnum)
 
+	// the first shardgrp (shardcfg.Gid1) initialize itself to own all shards
 	for s := 0; s < shardcfg.NShards; s++ {
-		kv.Freezed[shardcfg.Tshid(s)] = false
+		if kv.gid == shardcfg.Gid1 {
+			kv.Installed[shardcfg.Tshid(s)] = true
+		} else {
+			kv.Installed[shardcfg.Tshid(s)] = false
+		}
 	}
 
 	if maxraftstate > -1 {
@@ -498,7 +496,7 @@ func (kv *KVServer) get(args *rpc.GetArgs, reply *rpc.GetReply) {
 
 	shard := shardcfg.Key2Shard(args.Key)
 
-	if kv.Freezed[shard] {
+	if !kv.Installed[shard] {
 		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
 		return
@@ -542,7 +540,7 @@ func (kv *KVServer) put(args *rpc.PutArgs, reply *rpc.PutReply) {
 
 	shard := shardcfg.Key2Shard(args.Key)
 
-	if kv.Freezed[shard] {
+	if !kv.Installed[shard] {
 		DPrintf(fmt.Sprintf("Kv %d: deny Get operation from client %d because the shard %d is freezed", kv.me, args.ClientId, shard))
 		reply.Err = rpc.ErrWrongGroup
 		return
