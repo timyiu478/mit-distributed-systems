@@ -20,7 +20,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -107,16 +107,16 @@ func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
 	sck.mu.Lock()
 	defer sck.mu.Unlock()
-	// DPrintf(fmt.Sprintf("SCK %d: Query() is invoked", sck.id))
 
-	cfgStr, _, _ := sck.IKVClerk.Get("config")
+	cfgStr, version, _ := sck.IKVClerk.Get("config")
+
+	DPrintf(fmt.Sprintf("SCK %d: Query() is invoked, config version is %d", sck.id, version))
 
 	return shardcfg.FromString(cfgStr)
 }
 
 
 func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
-	// Stores the next configuration
 	storedNew, newVer, newErr := sck.IKVClerk.Get("new-config")
 	if newErr == rpc.OK {
 		storedCfg := shardcfg.FromString(storedNew)
@@ -125,13 +125,16 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 			DPrintf(fmt.Sprintf("SCK %d: only one controller can post a next configuration for a configuration Num %d", sck.id, new.Num))
 			return
 		}
+		// Stores the next configuration
+		if storedNew != new.String() {
+			err := sck.IKVClerk.Put("new-config", new.String(), newVer)
+			if err != rpc.OK {
+				DPrintf(fmt.Sprintf("SCK %d: failed to put new config", sck.id))
+				return
+			}
+		}
 	} else {
 		DPrintf(fmt.Sprintf("SCK %d: failed to get stored new config", sck.id))
-		return
-	}
-	err := sck.IKVClerk.Put("new-config", new.String(), newVer)
-	if err != rpc.OK {
-		DPrintf(fmt.Sprintf("SCK %d: failed to put new config", sck.id))
 		return
 	}
 
@@ -190,14 +193,14 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 				state, freezeErr := oldShardGrpCk.FreezeShard(shard, new.Num)
 
 				if freezeErr != rpc.OK {
-					DPrintf(fmt.Sprintf("SCK %d: failed to freezed shard %d", sck.id, s))
+					DPrintf(fmt.Sprintf("SCK %d: failed to freezed shard %d, err is %s", sck.id, s, freezeErr))
 					errCount++
 					continue
 				}
 
 				inShdErr := newShardGrpCk.InstallShard(shard, state, new.Num)
 
-				if inShdErr != rpc.OK && inShdErr != rpc.ErrVersion {
+				if inShdErr != rpc.OK {
 					DPrintf(fmt.Sprintf("SCK %d: failed to install shard %d to group %d, err is %s", sck.id, s, newGid, inShdErr))
 					errCount++
 					continue
@@ -205,7 +208,7 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 
 				delShdErr := oldShardGrpCk.DeleteShard(shard, new.Num)
 
-				if delShdErr != rpc.OK && delShdErr != rpc.ErrVersion {
+				if delShdErr != rpc.OK {
 					DPrintf(fmt.Sprintf("SCK %d: failed to delete shard %d from group %d, err is %s", sck.id, s, oldGid, delShdErr))
 					errCount++
 				}

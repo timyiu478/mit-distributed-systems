@@ -18,7 +18,7 @@ import (
 	"6.5840/tester1"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -295,14 +295,14 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	// Your code here
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
-	if args.Num <= kv.ShardNums[args.Shard] {
+	if args.Num < kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		kv.dupMu.Unlock()
 		return
 	}
-	if kv.Installed[args.Shard] {
-		DPrintf(fmt.Sprintf("Kv %d: unable to install shard %d because the shard %d is installed", kv.me, args.Shard, args.Shard))
-		reply.Err = rpc.ErrWrongGroup
+	if args.Num == kv.ShardNums[args.Shard] && kv.Installed[args.Shard] {
+		DPrintf(fmt.Sprintf("Kv %d: the shard %d is installed", kv.me, args.Shard))
+		reply.Err = rpc.OK
 		kv.dupMu.Unlock()
 		return
 	}
@@ -322,12 +322,12 @@ func (kv *KVServer) installShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	defer kv.dupMu.Unlock()
 
 	// reject old RPCs based on Num
-	if args.Num <= kv.ShardNums[args.Shard] {
+	if args.Num < kv.ShardNums[args.Shard] {
 		reply.Err = rpc.ErrVersion
 		return
 	}
 
-	if kv.Installed[args.Shard] {
+	if args.Num == kv.ShardNums[args.Shard] && kv.Installed[args.Shard] {
 		DPrintf(fmt.Sprintf("Kv %d: the shard %d is already installed", kv.me, args.Shard))
 		reply.Err = rpc.OK
 		return
@@ -377,14 +377,8 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 
 	kv.dupMu.Lock()
 	// reject old RPCs based on Num
-	if args.Num != kv.ShardNums[args.Shard] {
+	if args.Num != kv.ShardNums[args.Shard] || kv.Installed[args.Shard] {
 		reply.Err = rpc.ErrVersion
-		kv.dupMu.Unlock()
-		return
-	}
-	if !kv.Installed[args.Shard] {
-		DPrintf(fmt.Sprintf("Kv %d: the shard %d is already deleted", kv.me, args.Shard))
-		reply.Err = rpc.OK
 		kv.dupMu.Unlock()
 		return
 	}
