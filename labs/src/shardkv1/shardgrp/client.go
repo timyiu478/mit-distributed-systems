@@ -91,9 +91,13 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			DPrintf(fmt.Sprintf("ck %d: unable to get Put response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
 			counts[ck.leaderIdx] += 1
 			noResCounts += 1
-			if noResCounts > ck.maxRetry { return rpc.ErrMaybe }
+			if noResCounts > ck.maxRetry { 
+ 				// no responses from the entire shard group
+				// signal this error to outter Put (shardkv1/client.go's Put)
+				return rpc.ErrMaybe
+			}
 		}
-		if ret == false || reply.Err == rpc.ErrWrongLeader { 
+		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)
 			reply = &rpc.PutReply{}
 			time.Sleep(time.Duration(20) * time.Millisecond)

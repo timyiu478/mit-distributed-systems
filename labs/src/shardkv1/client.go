@@ -94,6 +94,8 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
+	errMaybe := false
+
 	for {
 		config := ck.sck.Query()
 		shard  := shardcfg.Key2Shard(key)
@@ -101,8 +103,8 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		gid, servers, ok := config.GidServers(shard)
 
 		if !ok {
-			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
-			return rpc.ErrWrongGroup
+			time.Sleep(time.Duration(20) * time.Millisecond)
+			continue
 		}
 
 		grpCk, ok := ck.shardgrpCks[gid]
@@ -117,7 +119,19 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 		err := grpCk.Put(key, value, version)
 
-		if err != rpc.ErrWrongGroup {
+		if err == rpc.ErrMaybe {
+			errMaybe = true
+		}
+
+		if err != rpc.ErrWrongGroup && err != rpc.ErrMaybe {
+		 	// If the server returns ErrVersion on a resend RPC,
+			// then Put must return ErrMaybe to the application, since
+			// its earlier RPC might have been processed by the server successfully
+			// but the response was lost, and the the Clerk doesn't know if
+			// the Put was performed or not.
+			if errMaybe && err == rpc.ErrVersion {
+				return rpc.ErrMaybe
+			}
 			return err
 		}
 
