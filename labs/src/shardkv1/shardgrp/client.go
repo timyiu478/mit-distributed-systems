@@ -30,7 +30,7 @@ func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 	ck.leaderIdx = 0
 	ck.seqNum = 0
 	ck.clientId  = clientId.Add(1)
-	ck.maxRetry = 2 * len(servers)
+	ck.maxRetry = len(servers)
 	return ck
 }
 
@@ -54,7 +54,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if ret == false {
 			DPrintf(fmt.Sprintf("ck %d: unable to get Get response from leader idx %d within timeout, servername is %s", ck.clientId, ck.leaderIdx, server))
 			noResCounts += 1
-			if noResCounts > ck.maxRetry { return "", 0, rpc.ErrWrongGroup }
+			if noResCounts > ck.maxRetry { return "", 0, rpc.ErrMaybe }
 		}
 		if ret == false || reply.Err == rpc.ErrWrongLeader {
 			ck.leaderIdx = (ck.leaderIdx + 1) % len(ck.servers)

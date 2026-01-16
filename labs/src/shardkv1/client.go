@@ -80,7 +80,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 		val, ver, err := grpCk.Get(key)
 
-		if err != rpc.ErrWrongGroup {
+		if err != rpc.ErrWrongGroup && err != rpc.ErrMaybe {
 			return val, ver, err
 		}
 
