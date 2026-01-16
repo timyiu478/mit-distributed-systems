@@ -993,15 +993,24 @@ func (rf *Raft) committedLogHandler() {
 		}
 
 		for i := rf.lastApplied + 1; i <= rf.commitIndex && rf.killed() == false; i++ {
-			DPrintf(fmt.Sprintf("Server %d sends applyMsg to msgDeliver for command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
 			applyMsg := raftapi.ApplyMsg {
 				CommandValid: true,
 				Command: rf.Log[i - rf.LastIncludedIndex - 1].Command,
 				CommandIndex: i,
 			}
 			if len(rf.deliverCh) < cap(rf.deliverCh) {
+				DPrintf(fmt.Sprintf("Server %d sends applyMsg to msgDeliver for command index %d in term %d, lastIncludedIndex is %d", rf.me, i, rf.CurrentTerm, rf.LastIncludedIndex))
 				rf.deliverCh <- applyMsg
 				rf.lastApplied = i
+			} else {
+				// If we not break the loop immediately when the deliverCh is full,
+				// the following bad secenerio is possible to happen:
+				// Trying to send apply messages that command indexes from 1 to 4
+				// deliverCh buffer size is 2
+				// Time 1: deliverCh: [1, 2]  # 1 and 2 denote the command index
+				// Time 2: skip command index 3 # incorrect!!
+				// Time 3: deliverCh: [2, 4]
+				break
 			}
 		}
 
@@ -1011,32 +1020,34 @@ func (rf *Raft) committedLogHandler() {
 
 func (rf *Raft) msgDeliver(lastApplied int) {
 	for !rf.killed() {
-		var msg raftapi.ApplyMsg
 		select {
-			case m, ok := <- rf.deliverCh:
+			case msg, ok := <- rf.deliverCh: {
 				if !ok { break }
-				msg = m
+				DPrintf(fmt.Sprintf("Server %d's deliverCh get command, CommandIndex is %d, SnapshotIndex is %d, CommandValid is %t, SnapshotValid is %t", rf.me, msg.CommandIndex, msg.SnapshotIndex, msg.CommandValid, msg.SnapshotValid))
+				if msg.CommandValid {
+					if msg.CommandIndex <= lastApplied {
+						DPrintf(fmt.Sprintf("Server %d skip command because command index (%d) <= lastApplied (%d)", rf.me, msg.CommandIndex, lastApplied))
+						continue
+					}
+					if msg.CommandIndex - 1 != lastApplied {
+						log.Fatalf("Server %d: msg.CommandIndex(%d) - 1 != lastApplied(%d)", rf.me, msg.CommandIndex, lastApplied)
+					}
+					rf.applyCh <- msg
+					lastApplied = msg.CommandIndex
+					DPrintf(fmt.Sprintf("Server %d: update lastApplied to %d because of new command", rf.me, lastApplied))
+				}
+				if msg.SnapshotValid {
+					if msg.SnapshotIndex <= lastApplied {
+						DPrintf(fmt.Sprintf("Server %d skip snapshot because snapshot index (%d) <= lastApplied (%d)", rf.me, msg.SnapshotIndex, lastApplied))
+						continue
+					}
+					rf.applyCh <- msg
+					lastApplied = msg.SnapshotIndex
+					DPrintf(fmt.Sprintf("Server %d: update lastApplied to %d because of new snapshot", rf.me, lastApplied))
+				}
+			}
 			case <- time.After(time.Duration(10) * time.Millisecond):
 				continue
-		}
-		if msg.CommandValid {
-			if msg.CommandIndex <= lastApplied {
-				DPrintf(fmt.Sprintf("Server %d skip command because command index (%d) <= lastApplied (%d)", rf.me, msg.CommandIndex, lastApplied))
-				continue
-			}
-			if msg.CommandIndex - 1 != lastApplied {
-				log.Fatalf("Server %d: msg.CommandIndex(%d) - 1 != lastApplied(%d)", rf.me, msg.CommandIndex, lastApplied)
-			}
-			rf.applyCh <- msg
-			lastApplied = msg.CommandIndex
-		}
-		if msg.SnapshotValid {
-			if msg.SnapshotIndex <= lastApplied {
-				DPrintf(fmt.Sprintf("Server %d skip snapshot because snapshot index (%d) <= lastApplied (%d)", rf.me, msg.SnapshotIndex, lastApplied))
-				continue
-			}
-			rf.applyCh <- msg
-			lastApplied = msg.SnapshotIndex
 		}
 	}
 

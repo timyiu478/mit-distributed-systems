@@ -12,6 +12,7 @@ import (
 	"time"
 	"fmt"
 	"sync"
+	"slices"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
@@ -28,6 +29,7 @@ type Clerk struct {
 	mu        sync.Mutex
 
 	shardgrpCks map[tester.Tgid]*shardgrp.Clerk
+	gidToServers map[tester.Tgid][]string
 }
 
 // The tester calls MakeClerk and passes in a shardctrler so that
@@ -39,6 +41,7 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 	}
 	// You'll have to add code here.
 	ck.shardgrpCks = make(map[tester.Tgid]*shardgrp.Clerk)
+	ck.gidToServers = make(map[tester.Tgid][]string)
 
 	return ck
 }
@@ -67,16 +70,17 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 		grpCk, ok := ck.shardgrpCks[gid]
 
-		if !ok {
+		if !ok || !slices.Equal(ck.gidToServers[gid], servers) {
 			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
 			gck := shardgrp.MakeClerk(ck.clnt, servers)
 			ck.shardgrpCks[gid] = gck
+			ck.gidToServers[gid] = servers
 			grpCk = gck
 		}
 
 		val, ver, err := grpCk.Get(key)
 
-		if err != rpc.ErrWrongGroup {
+		if err != rpc.ErrWrongGroup && err != rpc.ErrMaybe {
 			return val, ver, err
 		}
 
@@ -90,6 +94,8 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
+	errMaybe := false
+
 	for {
 		config := ck.sck.Query()
 		shard  := shardcfg.Key2Shard(key)
@@ -97,22 +103,35 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		gid, servers, ok := config.GidServers(shard)
 
 		if !ok {
-			DPrintf(fmt.Sprintf("Fail to find servers for shard %d", shard))
-			return rpc.ErrWrongGroup
+			time.Sleep(time.Duration(20) * time.Millisecond)
+			continue
 		}
 
 		grpCk, ok := ck.shardgrpCks[gid]
 
-		if !ok {
+		if !ok || !slices.Equal(ck.gidToServers[gid], servers) {
 			DPrintf(fmt.Sprintf("Fail to find grpCh for shard %d. Create one now.", shard))
 			gck := shardgrp.MakeClerk(ck.clnt, servers)
 			ck.shardgrpCks[gid] = gck
+			ck.gidToServers[gid] = servers
 			grpCk = gck
 		}
 
 		err := grpCk.Put(key, value, version)
 
-		if err != rpc.ErrWrongGroup {
+		if err == rpc.ErrMaybe {
+			errMaybe = true
+		}
+
+		if err != rpc.ErrWrongGroup && err != rpc.ErrMaybe {
+		 	// If the server returns ErrVersion on a resend RPC,
+			// then Put must return ErrMaybe to the application, since
+			// its earlier RPC might have been processed by the server successfully
+			// but the response was lost, and the the Clerk doesn't know if
+			// the Put was performed or not.
+			if errMaybe && err == rpc.ErrVersion {
+				return rpc.ErrMaybe
+			}
 			return err
 		}
 
