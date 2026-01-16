@@ -15,7 +15,7 @@ My completed projects at a glance:
 | 2 | **Raft** | A replicated state machine protocol for fault-tolerance  | [Here](labs/src/raft1) | `Consensus`, `Leader Election`, `Replicated State Machine`, `Log`, `Persistence` |
 | 3 | Fault-tolerant Key/Value Service |  A fault-tolerant key/value storage service using your Raft library | [Here](labs/src/kvraft1) | `Raft`, `Replicated State Machine`, `Snapshot`, `KV-Store`  |
 | 4 | Primary-Backup Key/Value Service | A primary/backup replication, assisted by a view service that decides which machines are alive and allows the system to have strong consistency in the presence of a network partition | [Here](2015/src/primary-backup.md) | `Primary-Backup`, `View Service`, `KV-Store`  |
-| 5 |  Sharded Key/Value Service | A highly-available sharded key/value service with many shard groups for scalability, and reconfiguration to handle changes in load | [Here](labs/src/shardkv1) | `Configuration`, `Sharding` |
+| 5 |  Sharded Key/Value Service | A highly-available sharded key/value service with many shard groups for scalability, reconfiguration to handle changes in load, and with a fault-tolerant controller | [Here](labs/src/shardkv1) | `Configuration`, `Sharding` |
 
 # Readings
 
