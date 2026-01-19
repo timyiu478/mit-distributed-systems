@@ -117,6 +117,8 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
+
+	if seq < px.min() { return }
 }
 
 //
@@ -129,9 +131,6 @@ func (px *Paxos) Done(seq int) {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
-
-	if seq < px.min() { return }
-
 
 }
 
@@ -329,7 +328,7 @@ func (px *Paxos) broadcastDoneSeqNum() {
 	if doneSeq < 0 { return }
 
 	for i := 0; i < len(px.peers); i++ {
-		if i == px.me { continue }
+		if i == px.me || doneSeq <= px.seqNums[i] { continue }
 
 		go func(peer string, me int, doneSeq int) {
 			args := &DoneArgs{Me: me, DoneSeq: doneSeq}
