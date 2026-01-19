@@ -32,6 +32,13 @@ import "fmt"
 import "math/rand"
 
 
+type Instance struct {
+	decided bool
+	np      int // highest prepare seen
+	na      int // highest accept seen
+	va 			interface{} // accepted value
+}
+
 // px.Status() return values, indicating
 // whether an agreement has been decided,
 // or Paxos has not yet reached agreement,
@@ -55,6 +62,10 @@ type Paxos struct {
 
 
 	// Your data here.
+	maxSeqNum int
+	minSeqNum int
+	seqNums   []int // each Paxos peer's highest Done argument
+	instances []Instance
 }
 
 //

@@ -20,3 +20,7 @@ px.Min() int // instances before this have been forgotten
 * It won't cope with crashes, since it stores neither the key/value database nor the Paxos state on disk. If one of the Paxos peers crashes, it will never be re-started.
 * It requires the set of servers to be fixed, so one cannot replace old servers.
 * It is slow: many Paxos messages are exchanged for each client operation.
+
+## Sketchs
+
+When are the instances no longer needed?
