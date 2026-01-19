@@ -63,8 +63,8 @@ type Paxos struct {
 
 
 	// Your data here.
-	maxSeqNum int
-	minSeqNum int
+	maxSeqNum int   // a maximum among *all* Paxos peers
+	minSeqNum int   // a minimum over *all* Paxos peers
 	seqNums   []int // each Paxos peer's highest Done argument
 	instances []Instance
 }
@@ -115,6 +115,8 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+	px.mu.Lock()
+	defer px.mu.Unlock()
 }
 
 //
@@ -125,6 +127,12 @@ func (px *Paxos) Start(seq int, v interface{}) {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if seq < px.min() { return }
+
+
 }
 
 //
@@ -134,7 +142,10 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	return px.maxSeqNum
 }
 
 //
@@ -167,7 +178,14 @@ func (px *Paxos) Max() int {
 //
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	return px.min()
+}
+
+func (px *Paxos) min() int {
+	return px.minSeqNum + 1
 }
 
 //
@@ -288,7 +306,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 		}()
 	}
 
-	 periodically
 	go func() {
 		for px.isdead() == false{ 
 			px.broadcastDoneSeqNum()
