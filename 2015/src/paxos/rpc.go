@@ -63,3 +63,13 @@ type AcceptReply struct {
 	DoneSeq int
 	Err 		Err
 }
+
+type DoneArgs struct {
+	Me  		int
+	DoneSeq int
+}
+
+type DoneReply struct {
+	Me  		int
+	DoneSeq int
+}

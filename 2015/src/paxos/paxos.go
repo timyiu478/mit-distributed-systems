@@ -31,6 +31,7 @@ import "sync/atomic"
 import "fmt"
 import "math/rand"
 
+import "time"
 
 type Instance struct {
 	decided bool
@@ -227,6 +228,14 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 
 
 	// Your initialization code here.
+	px.maxSeqNum = -1
+	px.minSeqNum = -1
+	px.seqNums   = make([]int, len(peers))
+	px.instances = make([]Instance)
+
+	for i := 0; i < len(peers); i++ {
+		px.seqNums = -1
+	}
 
 	if rpcs != nil {
 		// caller will create socket &c
@@ -279,6 +288,60 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 		}()
 	}
 
+	 periodically
+	go func() {
+		for px.isdead() == false{ 
+			px.broadcastDoneSeqNum()
+			time.Sleep(time.Duration(500) * time.Millisecond)
+		}
+	}()
+
 
 	return px
+}
+
+//
+// Broadcast the highest Done argument supplied by its local application
+//
+func (px *Paxos) broadcastDoneSeqNum() {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	doneSeq := px.seqNums[px.me]
+
+	if doneSeq < 0 { return }
+
+	for i := 0; i < len(px.peers); i++ {
+		if i == px.me { continue }
+
+		go func(peer string, me int, doneSeq int) {
+			args := &DoneArgs{Me: me, DoneSeq: doneSeq}
+			reply := &DoneReply{}
+
+			ret := call(peer, "Paxos.DoneSeq", args, reply)
+
+			if ret {
+				px.handleDoneSeqReply(reply)
+			}
+		}(px.peers[i], px.me, doneSeq)
+	}
+}
+
+func (px *Paxos) DoneSeq(args *DoneArgs, reply *DoneReply) error {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	reply.Me = px.me
+	reply.DoneSeq = px.seqNums[px.me]
+
+	return nil
+}
+
+func (px *Paxos) handleDoneSeqReply(reply *DoneReply) {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if reply.DoneSeq > px.seqNums[reply.Me] {
+		px.seqNums[reply.Me] = reply.DoneSeq
+	}
 }
