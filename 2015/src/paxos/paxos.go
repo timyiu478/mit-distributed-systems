@@ -152,6 +152,8 @@ func (px *Paxos) Start(seq int, v interface{}) {
 }
 
 func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
+	log.Println("Px:", px.me, ": start protocol for seq", seq)
+
 	for !px.isdead() {
 		randMill := time.Duration(rand.Intn(100)) * time.Millisecond
 		time.Sleep(time.Duration(100) * time.Millisecond + randMill)
@@ -168,6 +170,8 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		}
 
 		// Send prepare(n) to all servers including self
+		log.Println("Px", px.me, ": send prepare(n) to all servers for seq", seq)
+
 		var wgPrep sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			wgPrep.Add(1)
@@ -214,6 +218,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		}
 
 		// Send accept(n, v') to all
+		log.Println("Px", px.me, ": send accept(n, v') to all servers for seq", seq)
 		var wgAccept sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			wgAccept.Add(1)
@@ -262,6 +267,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		}
 		
 		// Send decided(v') to all
+		log.Println("Px", px.me, ": send decided(v') to all servers for seq", seq)
 		var wgDecided sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			wgDecided.Add(1)
@@ -370,6 +376,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 	if in.decided { return nil }
 
 	in.va = args.Value
+	in.decided = true
 
 	return nil
 }
@@ -693,7 +700,6 @@ func (px *Paxos) createInstanceIfNotExist(seq int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-
 	in, ok := px.instances[seq]
 
 	if !ok || !in.inited {
@@ -768,6 +774,8 @@ func (p *Proposer) prepareOkCount() int {
 		if ok { count++ }
 	}
 
+	log.Println("Prepare OK count is ", count)
+
 	return count
 }
 
@@ -780,6 +788,8 @@ func (p *Proposer) acceptedCount() int {
 	for _, ok := range p.accepted {
 		if ok { count++ }
 	}
+
+	log.Println("Accept count is ", count)
 
 	return count
 }
