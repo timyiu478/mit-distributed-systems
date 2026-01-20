@@ -40,6 +40,7 @@ type PrepareReply struct {
 	DoneSeq int
 	Na     	Proposal
 	Va   		interface{} // Value Accepted
+	HasVa   bool
 	Err 		Err
 }
 

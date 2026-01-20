@@ -46,6 +46,7 @@ type Instance struct {
 	decided bool
 	inited  bool
 	// acceptor state
+	hasVa  bool
 	np      Proposal // highest prepare seen
 	na      Proposal // highest accept seen
 	va 			interface{} // accepted value
@@ -55,6 +56,7 @@ func MakeInstance(me int) *Instance {
 	in := &Instance{}
 
 	in.decided = false
+	in.hasVa 	 = false
 	in.inited  = true
 	in.np = Proposal{Num: -1, Id: me}
 	in.na = Proposal{Num: -1, Id: me}
@@ -152,26 +154,29 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	go func(seq int, v interface{}) {
 		p := MakeProposer(px.me, v, len(px.peers))
 		px.startProtocol(p, seq, v) 
-	} (seq, v)
+	}(seq, v)
 }
 
 func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 	log.Println("Px:", px.me, ": start protocol for seq", seq)
 
 	for !px.isdead() {
-		randMill := time.Duration(rand.Intn(100)) * time.Millisecond
-		time.Sleep(time.Duration(100) * time.Millisecond + randMill)
+		randMill := time.Duration(rand.Intn(150)) * time.Millisecond
+		time.Sleep(time.Duration(50) * time.Millisecond + randMill)
 
 		if px.isInstanceDecided(seq) { return }
 		
 		// Choose n, unique and higher than any n seen so far
 		n := p.newN()
 
-		// Reset accepted and prepareOK
+		log.Println("Px", px.me, ": new n is", n.Num,"-",n.Id)
+
+		// Reset accepted, prepareOK, maxN
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			p.accepted[i]  = false
 			p.prepareOk[i] = false
 		}
+		p.maxN      = Proposal{Num: -1, Id: px.me}
 
 		// Send prepare(n) to all servers including self
 		log.Println("Px", px.me, ": send prepare(n) to all servers for seq", seq)
@@ -218,6 +223,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		wgPrep.Wait()
 
 		if p.prepareOkCount() < px.majority {
+			if p.maxN.lessThan(n) { p.maxN = n }
 			continue
 		}
 
@@ -267,6 +273,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		wgAccept.Wait()
 
 		if p.acceptedCount() < px.majority {
+			if p.maxN.lessThan(n) { p.maxN = n }
 			continue
 		}
 		
@@ -326,13 +333,13 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 	reply.DoneSeq = px.doneSeqNums[px.me]
 	reply.Na      = px.instances[args.SeqNum].na
 	reply.Va 			= px.instances[args.SeqNum].va
+	reply.HasVa 	= px.instances[args.SeqNum].hasVa
 	reply.Err 		= ErrReject
 
 	// Prepare OK case
 	if px.instances[args.SeqNum].np.lessThan(args.Num) {
 		px.instances[args.SeqNum].np = args.Num
 
-		reply.Va 			= px.instances[args.SeqNum].va
 		reply.Err = OK
 	}
 
@@ -355,9 +362,12 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 		return nil
 	}
 
-	px.instances[args.SeqNum].np = args.Num
-	px.instances[args.SeqNum].na = args.Num
-	px.instances[args.SeqNum].va = args.Value
+	log.Println("Px", px.me,": accept proprosal", args.Num.Num,"-",args.Num.Id, "for seq", args.SeqNum) 
+
+	px.instances[args.SeqNum].np 		= args.Num
+	px.instances[args.SeqNum].na 		= args.Num
+	px.instances[args.SeqNum].va 		= args.Value
+	px.instances[args.SeqNum].hasVa = true
 
 	reply.Err 		= OK
 
@@ -518,7 +528,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.peers = peers
 	px.me = me
 
-
 	// Your initialization code here.
 	px.maxSeqNum = -1
 	px.minDoneSeqNum = -1
@@ -585,14 +594,14 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	go func() {
 		for px.isdead() == false{ 
 			px.broadcastDoneSeqNum()
-			time.Sleep(time.Duration(500) * time.Millisecond)
+			time.Sleep(time.Duration(200) * time.Millisecond)
 		}
 	}()
 
 	go func() {
 		for px.isdead() == false{ 
 			px.forgetInstances()
-			time.Sleep(time.Duration(800) * time.Millisecond)
+			time.Sleep(time.Duration(400) * time.Millisecond)
 		}
 	}()
 
@@ -709,7 +718,7 @@ func MakeProposer(me int, val interface{}, peerLen int) *Proposer {
 
 	p.accepted 	= make([]bool, peerLen)
 	p.prepareOk = make([]bool, peerLen)
-	p.maxN      = Proposal{Num: -1}
+	p.maxN      = Proposal{Num: -1, Id: me}
 	p.me       	= me
 	p.val      	= val
 
@@ -740,7 +749,9 @@ func (p *Proposer) prepareReply(reply *PrepareReply) {
 
 	if p.maxN.lessThan(reply.Na) {
 		p.maxN = reply.Na
-		p.val  = reply.Va
+		if reply.HasVa {
+			p.val  = reply.Va
+		}
 	}
 }
 
