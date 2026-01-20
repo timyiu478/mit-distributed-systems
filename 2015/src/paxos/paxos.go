@@ -32,12 +32,35 @@ import "fmt"
 import "math/rand"
 
 import "time"
+import "slices"
+
+type Proposer struct {
+	mu      	sync.Mutex
+	me        int
+	maxN    	Proposal
+	prepareOk  []bool
+	accepted   []bool
+	val        interface{}
+}
 
 type Instance struct {
 	decided bool
-	np      int // highest prepare seen
-	na      int // highest accept seen
+	inited  bool
+	// acceptor state
+	np      Proposal // highest prepare seen
+	na      Proposal // highest accept seen
 	va 			interface{} // accepted value
+}
+
+func MakeInstance(me int) *Instance {
+	in := &Instance{}
+
+	in.decided = false
+	in.inited  = true
+	in.np = Proposal{Num: -1, Id: me}
+	in.na = Proposal{Num: -1, Id: me}
+
+	return in
 }
 
 // px.Status() return values, indicating
@@ -65,8 +88,10 @@ type Paxos struct {
 	// Your data here.
 	maxSeqNum int   // a maximum among *all* Paxos peers
 	minSeqNum int   // a minimum over *all* Paxos peers
+	offset    int   // the first sequence number of the log[0]
+	majority  int
 	seqNums   []int // each Paxos peer's highest Done argument
-	instances []Instance
+	log 			[]Instance
 }
 
 //
@@ -119,6 +144,237 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	defer px.mu.Unlock()
 
 	if seq < px.min() { return }
+
+	// Paxos protocol
+	go func(seq int, v interface{}) {
+		p := MakeProposer(px.me, v, len(px.peers))
+		px.startProtocol(p, seq, v) 
+	} (seq, v)
+}
+
+func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
+	for !px.isdead() {
+		randMill := time.Duration(rand.Intn(100)) * time.Millisecond
+		time.Sleep(time.Duration(100) * time.Millisecond + randMill)
+
+		if px.isInstanceDecided(seq) { return }
+		
+		// Choose n, unique and higher than any n seen so far
+		n := p.newN()
+
+		// Reset accepted and prepareOK
+		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			p.accepted[i]  = false
+			p.prepareOk[i] = false
+		}
+
+		// Send prepare(n) to all servers including self
+		var wgPrep sync.WaitGroup
+		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			pArgs  := &PrepareArgs{
+				Me: px.me,
+				SeqNum: seq,
+				DoneSeq: px.seqNums[px.me],
+				Num: n,
+			}
+
+			wgPrep.Add(1)
+		
+			if i == px.me {
+				go func(p *Proposer, pArgs *PrepareArgs, wg *sync.WaitGroup) {
+					pReply := &PrepareReply{}
+					err := px.Prepare(pArgs, pReply)
+
+					if err == nil {
+						p.prepareReply(pReply)
+						px.updateDoneSeq(pReply.DoneSeq, pReply.Me)
+					}
+
+					wg.Done()
+				}(p, pArgs, &wgPrep)
+				continue
+			}
+
+			go func(p *Proposer, peer string, pArgs *PrepareArgs, wg *sync.WaitGroup) {
+				pReply := &PrepareReply{}
+
+				ret := call(peer, "Paxos.Prepare", pArgs, pReply)
+
+				if ret {
+					p.prepareReply(pReply)
+					px.updateDoneSeq(pReply.DoneSeq, pReply.Me)
+				}
+
+				wg.Done()
+			}(p, px.peers[i], pArgs, &wgPrep)
+		}
+		wgPrep.Wait()
+
+		if p.prepareOkCount() < px.majority {
+			continue
+		}
+
+		// Send accept(n, v') to all
+		var wgAccept sync.WaitGroup
+		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			aArgs := &AcceptArgs{
+				Me: px.me,
+				SeqNum: seq,
+				DoneSeq: px.seqNums[px.me],
+				Num: n,
+				Value: p.val,
+			}
+
+			if i == px.me {
+				go func(p *Proposer, aArgs *AcceptArgs, wg *sync.WaitGroup) {
+					aReply := &AcceptReply{}
+
+					err := px.Accept(aArgs, aReply)
+
+					if err == nil {
+						p.acceptReply(aReply)
+						px.updateDoneSeq(aReply.DoneSeq, aReply.Me)
+					}
+
+					wg.Done()
+				}(p, aArgs, &wgAccept)
+				continue
+			}
+			go func(peer string, p *Proposer, aArgs *AcceptArgs, wg *sync.WaitGroup) {
+				aReply := &AcceptReply{}
+
+				ret := call(peer, "Paxos.Accept", aArgs, aReply)
+
+				if ret {
+					p.acceptReply(aReply)
+					px.updateDoneSeq(aReply.DoneSeq, aReply.Me)
+				}
+
+				wg.Done()
+			}(px.peers[i], p, aArgs, &wgAccept)
+
+			wgAccept.Add(1)
+		}
+		wgAccept.Wait()
+
+		if p.acceptedCount() < px.majority {
+			continue
+		}
+		
+		// Send decided(v') to all
+		var wgDecided sync.WaitGroup
+		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			dArgs := &DecidedArgs{
+				Me: px.me,
+				SeqNum: seq,
+				DoneSeq: px.seqNums[px.me],
+				Value: p.val,
+			}
+
+			if i == px.me {
+				go func(p *Proposer, dArgs *DecidedArgs, wg *sync.WaitGroup) {
+					reply := &DecidedReply{}
+
+					err := px.Decided(dArgs, reply)
+
+					if err == nil {
+						px.updateDoneSeq(reply.DoneSeq, reply.Me)
+					}
+
+					wg.Done()
+				}(p, dArgs, &wgDecided)
+				continue
+			}
+			go func(peer string, p *Proposer, dArgs *DecidedArgs, wg *sync.WaitGroup) {
+				reply := &DecidedReply{}
+
+				ret := call(peer, "Paxos.Decided", dArgs, reply)
+
+				if ret {
+					px.updateDoneSeq(reply.DoneSeq, reply.Me)
+				}
+
+				wg.Done()
+			}(px.peers[i], p, dArgs, &wgDecided)
+
+			wgDecided.Add(1)
+		}
+		wgDecided.Wait()
+	}
+}
+
+func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+	px.updateDoneSeq(args.DoneSeq, args.Me) 
+	px.createInstanceIfNotExist(args.SeqNum)
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	logIdx := px.logIdx(args.SeqNum)
+
+	// Set default reply
+	reply.Me  		= px.me
+	reply.DoneSeq = px.seqNums[px.me]
+	reply.Na      = px.log[logIdx].na
+	reply.Va 			= px.log[logIdx].va
+	reply.Err 		= ErrReject
+
+	// Prepare OK case
+	if px.log[logIdx].np.lessThan(args.Num) {
+		px.log[logIdx].np = args.Num
+
+		reply.Va 			= px.log[logIdx].va
+		reply.Err = OK
+	}
+
+	return nil
+}
+
+func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
+	px.updateDoneSeq(args.DoneSeq, args.Me) 
+	px.createInstanceIfNotExist(args.SeqNum)
+	
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	// Default Reply
+	reply.Me  		= px.me
+	reply.DoneSeq = px.seqNums[px.me]
+	reply.Err 		= ErrReject
+
+	logIdx := px.logIdx(args.SeqNum)
+
+	if !px.log[logIdx].np.lessThanOrEqual(args.Num) {
+		return nil
+	}
+
+	px.log[logIdx].np = args.Num
+	px.log[logIdx].na = args.Num
+	px.log[logIdx].va = args.Value
+
+	reply.Err 		= OK
+
+	return nil
+}
+
+func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+	px.updateDoneSeq(args.DoneSeq, args.Me) 
+	px.createInstanceIfNotExist(args.SeqNum)
+
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	logIdx := px.logIdx(args.SeqNum)
+
+	// Default Reply
+	reply.Me  		= px.me
+	reply.DoneSeq = px.seqNums[px.me]
+
+	if px.log[logIdx].decided { return nil }
+
+	px.log[logIdx].va = args.Value
+
+	return nil
 }
 
 //
@@ -132,6 +388,7 @@ func (px *Paxos) Done(seq int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
+	px.seqNums[px.me] = seq
 }
 
 //
@@ -196,7 +453,20 @@ func (px *Paxos) min() int {
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	// Your code here.
-	return Pending, nil
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if seq < px.offset {
+		return Forgotten, nil
+	}
+
+	logIdx := px.logIdx(seq)
+
+	if logIdx >= len(px.log) || !px.log[logIdx].decided {
+		return Pending, nil
+	}
+
+	return Decided, px.log[logIdx].va
 }
 
 
@@ -247,11 +517,13 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	// Your initialization code here.
 	px.maxSeqNum = -1
 	px.minSeqNum = -1
+	px.offset		 = 0
+	px.majority  = len(peers) / 2 + 1
 	px.seqNums   = make([]int, len(peers))
-	px.instances = make([]Instance)
+	px.log 			 = make([]Instance, 0)
 
 	for i := 0; i < len(peers); i++ {
-		px.seqNums = -1
+		px.seqNums[i] = -1
 	}
 
 	if rpcs != nil {
@@ -312,8 +584,26 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 		}
 	}()
 
+	go func() {
+		for px.isdead() == false{ 
+			px.forgetInstances()
+			time.Sleep(time.Duration(800) * time.Millisecond)
+		}
+	}()
+
 
 	return px
+}
+
+func (px *Paxos) forgetInstances() {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if px.offset > px.minSeqNum { return }
+
+	px.log = px.log[px.minSeqNum - px.offset + 1:]
+
+	px.offset = px.minSeqNum + 1
 }
 
 //
@@ -360,4 +650,140 @@ func (px *Paxos) handleDoneSeqReply(reply *DoneReply) {
 	if reply.DoneSeq > px.seqNums[reply.Me] {
 		px.seqNums[reply.Me] = reply.DoneSeq
 	}
+}
+
+func (px *Paxos) logIdx(seq int) int {
+	return seq - px.offset 
+}
+
+func (px *Paxos) isInstanceDecided(seq int) bool {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	if px.logIdx(seq) < len(px.log) && px.log[px.logIdx(seq)].decided {
+		return true
+	}
+	return false
+}
+
+
+func (px *Paxos) updateDoneSeq(seq int, peerIdx int) {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	
+	if seq > px.seqNums[peerIdx] {
+		px.seqNums[peerIdx] = seq
+
+		minSeqNum := px.seqNums[px.me]
+		maxSeqNum := px.seqNums[px.me]
+
+		for seqNum := range px.seqNums {
+			if seqNum < minSeqNum {
+				minSeqNum = seqNum
+			}
+			if seqNum > minSeqNum {
+				maxSeqNum = seqNum
+			}
+		}
+
+		px.minSeqNum = minSeqNum
+		px.maxSeqNum = maxSeqNum
+	}
+}
+
+func (px *Paxos) createInstanceIfNotExist(seq int) {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+
+	logIdx := px.logIdx(seq)
+
+	if logIdx >= len(px.log) {
+		px.log = slices.Grow(px.log, logIdx + 1)
+	}
+
+	if !px.log[logIdx].inited {
+		in := MakeInstance(px.me)
+		px.log[logIdx] = *in
+	}
+}
+
+func MakeProposer(me int, val interface{}, peerLen int) *Proposer {
+	p := &Proposer{}	
+
+	p.accepted = make([]bool, peerLen)
+	p.maxN     = Proposal{Num: -1}
+	p.me       = me
+	p.val      = val
+
+	return p
+}
+
+func (p *Proposer) newN() Proposal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return Proposal{Num: p.maxN.Num + 1, Id: p.me}
+}
+
+func (p *Proposer) prepareReply(reply *PrepareReply) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if reply.Err == ErrReject { 
+		return
+	}
+
+	if reply.Err != OK {
+		log.Println("Proposer", p.me, ": incorrect prepare reply err -", reply.Err)
+		return
+	}
+	
+	p.prepareOk[reply.Me] = true
+
+	if p.maxN.lessThan(reply.Na) {
+		p.maxN = reply.Na
+		p.val  = reply.Va
+	}
+}
+
+func (p *Proposer) acceptReply(reply *AcceptReply) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if reply.Err == ErrReject { 
+		return
+	}
+
+	if reply.Err != OK {
+		log.Println("Proposer", p.me, ": incorrect accept reply err -", reply.Err)
+		return
+	}
+
+	p.accepted[reply.Me] = true
+}
+
+func (p *Proposer) prepareOkCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	count := 0
+
+	for _, ok := range p.prepareOk {
+		if ok { count++ }
+	}
+
+	return count
+}
+
+func (p *Proposer) acceptedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	count := 0
+
+	for _, ok := range p.accepted {
+		if ok { count++ }
+	}
+
+	return count
 }
