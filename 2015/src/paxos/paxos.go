@@ -170,14 +170,14 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		// Send prepare(n) to all servers including self
 		var wgPrep sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			wgPrep.Add(1)
+
 			pArgs  := &PrepareArgs{
 				Me: px.me,
 				SeqNum: seq,
 				DoneSeq: px.seqNums[px.me],
 				Num: n,
 			}
-
-			wgPrep.Add(1)
 		
 			if i == px.me {
 				go func(p *Proposer, pArgs *PrepareArgs, wg *sync.WaitGroup) {
@@ -216,6 +216,8 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		// Send accept(n, v') to all
 		var wgAccept sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			wgAccept.Add(1)
+
 			aArgs := &AcceptArgs{
 				Me: px.me,
 				SeqNum: seq,
@@ -252,7 +254,6 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 				wg.Done()
 			}(px.peers[i], p, aArgs, &wgAccept)
 
-			wgAccept.Add(1)
 		}
 		wgAccept.Wait()
 
@@ -263,6 +264,8 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		// Send decided(v') to all
 		var wgDecided sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
+			wgDecided.Add(1)
+
 			dArgs := &DecidedArgs{
 				Me: px.me,
 				SeqNum: seq,
@@ -296,7 +299,6 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 				wg.Done()
 			}(px.peers[i], p, dArgs, &wgDecided)
 
-			wgDecided.Add(1)
 		}
 		wgDecided.Wait()
 	}
