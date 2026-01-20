@@ -16,6 +16,7 @@ My completed projects at a glance:
 | 3 | Fault-tolerant Key/Value Service |  A fault-tolerant key/value storage service using your Raft library | [Here](labs/src/kvraft1) | `Raft`, `Replicated State Machine`, `Snapshot`, `KV-Store`  |
 | 4 | Primary-Backup Key/Value Service | A primary/backup replication, assisted by a view service that decides which machines are alive and allows the system to have strong consistency in the presence of a network partition | [Here](2015/src/primary-backup.md) | `Primary-Backup`, `View Service`, `KV-Store`  |
 | 5 |  Sharded Key/Value Service | A highly-available sharded key/value service with many shard groups for scalability, reconfiguration to handle changes in load, and with a fault-tolerant controller | [Here](labs/src/shardkv1) | `Configuration`, `Sharding` |
+| 6 |  **Paxos** | A Paxos library's interface that supports an indefinite sequence of agreement "instances" | [Here](2015/src/paxos.md) | `Consensus`, `Peer-to-Peer` |
 
 # Readings
 
@@ -30,4 +31,4 @@ My writeups at a glance:
 | 5 | Principles of Computer System Design An Introduction - Chapter 9 | Two Phase Commit is a well known protocol to solve atomicity problem in distributed transaction | [Here](papers/write-ups/dtx.md) | `Distributed Transaction`, `Two-Phrase Commit`, `Serializability`, `Atomicity` |
 | 6 | Spanner: Google’s Globally-Distributed Database | The first system to distribute data at global scale and support externally-consistent distributed transactions. | [Here](papers/write-ups/spanner.md) | `Database`, `Distributed Transaction`, `Global Storage` |
 | 7 | Scaling Memcache at Facebook | Leverages memcached as a building block to construct and scale a distributed key-value store that supports the world’s largest social network | [Here](papers/write-ups/memcached.md) | `Cache`, `Memcached`, `Eventual Consistenncy` |
-| 8 | Paxos Made Simple | A consensus algorithm that a value v is chosen the moment some proposal (n, v) is accepted by a majority of acceptors | [Here](papers/write-ups/paxos.md) | `Consensus` |
+| 8 | Paxos Made Simple | A consensus algorithm that a value v is chosen the moment some proposal (n, v) is accepted by a majority of acceptors | [Here](papers/write-ups/paxos.md) | `Consensus`, `Peer-to-Peer` |
