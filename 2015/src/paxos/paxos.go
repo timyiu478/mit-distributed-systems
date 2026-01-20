@@ -403,7 +403,9 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	log.Println("Px", px.me, ": Done(seq =", seq,")")
 	px.updateDoneSeq(seq, px.me)
+	px.broadcastDoneSeqNum()
 }
 
 //
@@ -594,7 +596,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	go func() {
 		for px.isdead() == false{ 
 			px.broadcastDoneSeqNum()
-			time.Sleep(time.Duration(200) * time.Millisecond)
+			time.Sleep(time.Duration(1000) * time.Millisecond)
 		}
 	}()
 
@@ -634,7 +636,7 @@ func (px *Paxos) broadcastDoneSeqNum() {
 	if doneSeq < 0 { return }
 
 	for i := 0; i < len(px.peers); i++ {
-		if i == px.me || doneSeq <= px.doneSeqNums[i] { continue }
+		if i == px.me { continue }
 
 		go func(peer string, me int, doneSeq int) {
 			args := &DoneArgs{Me: me, DoneSeq: doneSeq}
@@ -650,6 +652,8 @@ func (px *Paxos) broadcastDoneSeqNum() {
 }
 
 func (px *Paxos) DoneSeq(args *DoneArgs, reply *DoneReply) error {
+	px.updateDoneSeq(args.DoneSeq, args.Me)
+
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
@@ -660,12 +664,7 @@ func (px *Paxos) DoneSeq(args *DoneArgs, reply *DoneReply) error {
 }
 
 func (px *Paxos) handleDoneSeqReply(reply *DoneReply) {
-	px.mu.Lock()
-	defer px.mu.Unlock()
-
-	if reply.DoneSeq > px.doneSeqNums[reply.Me] {
-		px.doneSeqNums[reply.Me] = reply.DoneSeq
-	}
+	px.updateDoneSeq(reply.DoneSeq, reply.Me)
 }
 
 func (px *Paxos) isInstanceDecided(seq int) bool {
@@ -691,13 +690,15 @@ func (px *Paxos) updateDoneSeq(doneSeq int, peerIdx int) {
 
 		minSeqNum := px.doneSeqNums[px.me]
 
-		for seqNum := range px.doneSeqNums {
+		for _, seqNum := range px.doneSeqNums {
 			if seqNum < minSeqNum {
 				minSeqNum = seqNum
 			}
 		}
 
 		px.minDoneSeqNum = minSeqNum
+		
+		log.Println("Px ",px.me, ": updated done seq to", px.minDoneSeqNum)
 	}
 }
 
