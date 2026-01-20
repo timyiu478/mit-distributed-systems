@@ -85,11 +85,11 @@ type Paxos struct {
 
 
 	// Your data here.
-	maxSeqNum int   // a maximum among *all* Paxos peers
-	minSeqNum int   // a minimum over *all* Paxos peers
+	maxSeqNum int   // highest instance seq known, or -1
+	minDoneSeqNum int   // a minimum over *all* Paxos peers
 	offset    int   // the first sequence number of the log[0]
 	majority  int
-	seqNums   []int // each Paxos peer's highest Done argument
+	doneSeqNums   []int // each Paxos peer's highest Done argument
 	instances	map[int]*Instance
 }
 
@@ -144,6 +144,10 @@ func (px *Paxos) Start(seq int, v interface{}) {
 
 	if seq < px.min() { return }
 
+	if seq > px.maxSeqNum {
+		px.maxSeqNum = seq
+	}
+
 	// Paxos protocol
 	go func(seq int, v interface{}) {
 		p := MakeProposer(px.me, v, len(px.peers))
@@ -179,7 +183,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 			pArgs  := &PrepareArgs{
 				Me: px.me,
 				SeqNum: seq,
-				DoneSeq: px.seqNums[px.me],
+				DoneSeq: px.doneSeqNums[px.me],
 				Num: n,
 			}
 		
@@ -226,7 +230,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 			aArgs := &AcceptArgs{
 				Me: px.me,
 				SeqNum: seq,
-				DoneSeq: px.seqNums[px.me],
+				DoneSeq: px.doneSeqNums[px.me],
 				Num: n,
 				Value: p.val,
 			}
@@ -275,7 +279,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 			dArgs := &DecidedArgs{
 				Me: px.me,
 				SeqNum: seq,
-				DoneSeq: px.seqNums[px.me],
+				DoneSeq: px.doneSeqNums[px.me],
 				Value: p.val,
 			}
 
@@ -319,7 +323,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
 	// Set default reply
 	reply.Me  		= px.me
-	reply.DoneSeq = px.seqNums[px.me]
+	reply.DoneSeq = px.doneSeqNums[px.me]
 	reply.Na      = px.instances[args.SeqNum].na
 	reply.Va 			= px.instances[args.SeqNum].va
 	reply.Err 		= ErrReject
@@ -344,7 +348,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 
 	// Default Reply
 	reply.Me  		= px.me
-	reply.DoneSeq = px.seqNums[px.me]
+	reply.DoneSeq = px.doneSeqNums[px.me]
 	reply.Err 		= ErrReject
 
 	if !px.instances[args.SeqNum].np.lessThanOrEqual(args.Num) {
@@ -369,7 +373,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 
 	// Default Reply
 	reply.Me  		= px.me
-	reply.DoneSeq = px.seqNums[px.me]
+	reply.DoneSeq = px.doneSeqNums[px.me]
 
 	in := px.instances[args.SeqNum]
 
@@ -389,10 +393,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
-	px.mu.Lock()
-	defer px.mu.Unlock()
-
-	px.seqNums[px.me] = seq
+	px.updateDoneSeq(seq, px.me)
 }
 
 //
@@ -445,7 +446,7 @@ func (px *Paxos) Min() int {
 }
 
 func (px *Paxos) min() int {
-	return px.minSeqNum + 1
+	return px.minDoneSeqNum + 1
 }
 
 //
@@ -520,14 +521,14 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 
 	// Your initialization code here.
 	px.maxSeqNum = -1
-	px.minSeqNum = -1
+	px.minDoneSeqNum = -1
 	px.offset		 = 0
 	px.majority  = len(peers) / 2 + 1
-	px.seqNums   = make([]int, len(peers))
+	px.doneSeqNums   = make([]int, len(peers))
 	px.instances = make(map[int]*Instance)
 
 	for i := 0; i < len(peers); i++ {
-		px.seqNums[i] = -1
+		px.doneSeqNums[i] = -1
 	}
 
 	if rpcs != nil {
@@ -603,13 +604,13 @@ func (px *Paxos) forgetInstances() {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	if px.offset > px.minSeqNum { return }
+	if px.offset > px.minDoneSeqNum { return }
 
-	for seq := px.offset; seq <= px.minSeqNum; seq++ {
+	for seq := px.offset; seq <= px.minDoneSeqNum; seq++ {
 		delete(px.instances, seq)
 	}
 
-	px.offset = px.minSeqNum + 1
+	px.offset = px.minDoneSeqNum + 1
 }
 
 //
@@ -619,12 +620,12 @@ func (px *Paxos) broadcastDoneSeqNum() {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	doneSeq := px.seqNums[px.me]
+	doneSeq := px.doneSeqNums[px.me]
 
 	if doneSeq < 0 { return }
 
 	for i := 0; i < len(px.peers); i++ {
-		if i == px.me || doneSeq <= px.seqNums[i] { continue }
+		if i == px.me || doneSeq <= px.doneSeqNums[i] { continue }
 
 		go func(peer string, me int, doneSeq int) {
 			args := &DoneArgs{Me: me, DoneSeq: doneSeq}
@@ -644,7 +645,7 @@ func (px *Paxos) DoneSeq(args *DoneArgs, reply *DoneReply) error {
 	defer px.mu.Unlock()
 
 	reply.Me = px.me
-	reply.DoneSeq = px.seqNums[px.me]
+	reply.DoneSeq = px.doneSeqNums[px.me]
 
 	return nil
 }
@@ -653,8 +654,8 @@ func (px *Paxos) handleDoneSeqReply(reply *DoneReply) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	if reply.DoneSeq > px.seqNums[reply.Me] {
-		px.seqNums[reply.Me] = reply.DoneSeq
+	if reply.DoneSeq > px.doneSeqNums[reply.Me] {
+		px.doneSeqNums[reply.Me] = reply.DoneSeq
 	}
 }
 
@@ -672,27 +673,22 @@ func (px *Paxos) isInstanceDecided(seq int) bool {
 }
 
 
-func (px *Paxos) updateDoneSeq(seq int, peerIdx int) {
+func (px *Paxos) updateDoneSeq(doneSeq int, peerIdx int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 	
-	if seq > px.seqNums[peerIdx] {
-		px.seqNums[peerIdx] = seq
+	if doneSeq > px.doneSeqNums[peerIdx] {
+		px.doneSeqNums[peerIdx] = doneSeq
 
-		minSeqNum := px.seqNums[px.me]
-		maxSeqNum := px.seqNums[px.me]
+		minSeqNum := px.doneSeqNums[px.me]
 
-		for seqNum := range px.seqNums {
+		for seqNum := range px.doneSeqNums {
 			if seqNum < minSeqNum {
 				minSeqNum = seqNum
 			}
-			if seqNum > minSeqNum {
-				maxSeqNum = seqNum
-			}
 		}
 
-		px.minSeqNum = minSeqNum
-		px.maxSeqNum = maxSeqNum
+		px.minDoneSeqNum = minSeqNum
 	}
 }
 
