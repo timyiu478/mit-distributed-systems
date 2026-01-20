@@ -32,7 +32,6 @@ import "fmt"
 import "math/rand"
 
 import "time"
-import "slices"
 
 type Proposer struct {
 	mu      	sync.Mutex
@@ -91,7 +90,7 @@ type Paxos struct {
 	offset    int   // the first sequence number of the log[0]
 	majority  int
 	seqNums   []int // each Paxos peer's highest Done argument
-	log 			[]Instance
+	instances	map[int]*Instance
 }
 
 //
@@ -310,20 +309,18 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	logIdx := px.logIdx(args.SeqNum)
-
 	// Set default reply
 	reply.Me  		= px.me
 	reply.DoneSeq = px.seqNums[px.me]
-	reply.Na      = px.log[logIdx].na
-	reply.Va 			= px.log[logIdx].va
+	reply.Na      = px.instances[args.SeqNum].na
+	reply.Va 			= px.instances[args.SeqNum].va
 	reply.Err 		= ErrReject
 
 	// Prepare OK case
-	if px.log[logIdx].np.lessThan(args.Num) {
-		px.log[logIdx].np = args.Num
+	if px.instances[args.SeqNum].np.lessThan(args.Num) {
+		px.instances[args.SeqNum].np = args.Num
 
-		reply.Va 			= px.log[logIdx].va
+		reply.Va 			= px.instances[args.SeqNum].va
 		reply.Err = OK
 	}
 
@@ -342,15 +339,13 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 	reply.DoneSeq = px.seqNums[px.me]
 	reply.Err 		= ErrReject
 
-	logIdx := px.logIdx(args.SeqNum)
-
-	if !px.log[logIdx].np.lessThanOrEqual(args.Num) {
+	if !px.instances[args.SeqNum].np.lessThanOrEqual(args.Num) {
 		return nil
 	}
 
-	px.log[logIdx].np = args.Num
-	px.log[logIdx].na = args.Num
-	px.log[logIdx].va = args.Value
+	px.instances[args.SeqNum].np = args.Num
+	px.instances[args.SeqNum].na = args.Num
+	px.instances[args.SeqNum].va = args.Value
 
 	reply.Err 		= OK
 
@@ -364,15 +359,15 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	logIdx := px.logIdx(args.SeqNum)
-
 	// Default Reply
 	reply.Me  		= px.me
 	reply.DoneSeq = px.seqNums[px.me]
 
-	if px.log[logIdx].decided { return nil }
+	in := px.instances[args.SeqNum]
 
-	px.log[logIdx].va = args.Value
+	if in.decided { return nil }
+
+	in.va = args.Value
 
 	return nil
 }
@@ -460,13 +455,13 @@ func (px *Paxos) Status(seq int) (Fate, interface{}) {
 		return Forgotten, nil
 	}
 
-	logIdx := px.logIdx(seq)
+	in, ok := px.instances[seq]
 
-	if logIdx >= len(px.log) || !px.log[logIdx].decided {
+	if !ok || !in.decided {
 		return Pending, nil
 	}
 
-	return Decided, px.log[logIdx].va
+	return Decided, in.va
 }
 
 
@@ -520,7 +515,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.offset		 = 0
 	px.majority  = len(peers) / 2 + 1
 	px.seqNums   = make([]int, len(peers))
-	px.log 			 = make([]Instance, 0)
+	px.instances = make(map[int]*Instance)
 
 	for i := 0; i < len(peers); i++ {
 		px.seqNums[i] = -1
@@ -601,7 +596,9 @@ func (px *Paxos) forgetInstances() {
 
 	if px.offset > px.minSeqNum { return }
 
-	px.log = px.log[px.minSeqNum - px.offset + 1:]
+	for seq := px.offset; seq <= px.minSeqNum; seq++ {
+		delete(px.instances, seq)
+	}
 
 	px.offset = px.minSeqNum + 1
 }
@@ -652,17 +649,16 @@ func (px *Paxos) handleDoneSeqReply(reply *DoneReply) {
 	}
 }
 
-func (px *Paxos) logIdx(seq int) int {
-	return seq - px.offset 
-}
-
 func (px *Paxos) isInstanceDecided(seq int) bool {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	if px.logIdx(seq) < len(px.log) && px.log[px.logIdx(seq)].decided {
+	in, ok := px.instances[seq]
+
+	if ok && in.decided {
 		return true
 	}
+
 	return false
 }
 
@@ -695,25 +691,23 @@ func (px *Paxos) createInstanceIfNotExist(seq int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
-	logIdx := px.logIdx(seq)
 
-	if logIdx >= len(px.log) {
-		px.log = slices.Grow(px.log, logIdx + 1)
-	}
+	in, ok := px.instances[seq]
 
-	if !px.log[logIdx].inited {
-		in := MakeInstance(px.me)
-		px.log[logIdx] = *in
+	if !ok || !in.inited {
+		inst := MakeInstance(px.me)
+		px.instances[seq] = inst
 	}
 }
 
 func MakeProposer(me int, val interface{}, peerLen int) *Proposer {
 	p := &Proposer{}	
 
-	p.accepted = make([]bool, peerLen)
-	p.maxN     = Proposal{Num: -1}
-	p.me       = me
-	p.val      = val
+	p.accepted 	= make([]bool, peerLen)
+	p.prepareOk = make([]bool, peerLen)
+	p.maxN      = Proposal{Num: -1}
+	p.me       	= me
+	p.val      	= val
 
 	return p
 }
