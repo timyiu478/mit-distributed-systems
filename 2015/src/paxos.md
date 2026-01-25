@@ -66,6 +66,12 @@ px.Max() int // highest instance seq known, or -1
 px.Min() int // instances before this have been forgotten
 ```
 
+## High Level Idea
+
+How to make progress on agreement for multiple instances at the same time:
+
+![](assets/paxos_library_how_to_start_multiple_instance_in_parallel.png)
+
 ## Limitations
 
 * It won't cope with crashes, since it stores neither the key/value database nor the Paxos state on disk. If one of the Paxos peers crashes, it will never be re-started.
