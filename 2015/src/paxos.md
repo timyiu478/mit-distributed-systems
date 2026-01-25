@@ -71,6 +71,7 @@ px.Min() int // instances before this have been forgotten
 ### How to make progress on the agreement for multiple instances at the same time
 
 Related code: https://github.com/timyiu478/mit-distributed-systems/blob/main/2015/src/paxos/paxos.go#L142-L322
+Remark: the diagram is not fully the same as the code
 
 ![](assets/paxos_library_how_to_start_multiple_instance_in_parallel.png)
 
