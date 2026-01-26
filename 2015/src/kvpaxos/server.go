@@ -27,6 +27,8 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Me          int // server id
+	Req    			interface{}
 }
 
 type KVPaxos struct {
@@ -38,6 +40,10 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	// Deduplication Detection
+	// Assume that each clerk has only one outstanding Put, Get, or Append
+	lastReqId  map[int64]int
+	replys     map[int64]interface{}
 }
 
 

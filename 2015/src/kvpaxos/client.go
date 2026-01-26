@@ -9,6 +9,8 @@ import "fmt"
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
+	id      int64
+	seqId   int
 }
 
 func nrand() int64 {
@@ -22,6 +24,8 @@ func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.id      = nrand()
+	ck.seqId   = 0
 	return ck
 }
 
