@@ -3,14 +3,17 @@ package kvpaxos
 import "net/rpc"
 import "crypto/rand"
 import "math/big"
+import "sync"
 
 import "fmt"
 
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
-	id      int64
-	seqId   int
+	mu      sync.Mutex
+	id      	int64
+	seqId   	int
+	serverIdx int
 }
 
 func nrand() int64 {
@@ -24,8 +27,9 @@ func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.id      = nrand()
-	ck.seqId   = 0
+	ck.id      		= nrand()
+	ck.seqId   		= 0
+	ck.serverIdx 	= 0
 	return ck
 }
 
@@ -70,7 +74,35 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	ck.seqId++
+
+	for {
+		server := ck.servers[ck.serverIdx]
+
+		args := &GetArgs{
+			Key: 	 key,
+			Me:  	 ck.id,
+			SeqId: ck.seqId
+		}
+		reply := &GetReply{}
+
+		ret := call(server, "KVPaxos.PutAppend", args, reply)
+
+		if !ret {
+			ck.serverIdx = (ck.serverIdx + 1) % len(ck.servers)
+			continue
+		}
+
+		switch reply.Err {
+			case OK:
+				return reply.Value
+			default:
+				return ""
+		}
+	}
 }
 
 //
@@ -78,6 +110,37 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	ck.seqId++
+
+	if op != "Put" && op != "Append" {
+		// Invalid op
+		return
+	}
+
+	for {
+		server := ck.servers[ck.serverIdx]
+
+		args := &PutAppendArgs{
+			Key: 	 key,
+			Value: value,
+			Op:    op,
+			Me:  	 ck.id,
+			SeqId: ck.seqId
+		}
+		reply := &PutAppendReply{}
+
+		ret := call(server, "KVPaxos.PutAppend", args, reply)
+
+		if !ret {
+			ck.serverIdx = (ck.serverIdx + 1) % len(ck.servers)
+			continue
+		}
+
+		if reply.Err == OK { return }
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
