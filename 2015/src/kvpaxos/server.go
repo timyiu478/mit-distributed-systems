@@ -40,6 +40,7 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	kvs 			 map[string]string
 	// Deduplication Detection
 	// Assume that each clerk has only one outstanding Put, Get, or Append
 	lastReqId  map[int64]int
@@ -147,4 +148,31 @@ func StartServer(servers []string, me int) *KVPaxos {
 	}()
 
 	return kv
+}
+
+func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
+	val, ok := kv.kvs[args.Key]
+	if ok {
+		reply.Err   = OK
+		reply.Value = val
+		return
+	}
+	reply.Err   = ErrNoKey
+}
+
+func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	oldval, ok := kv.kvs[args.Key]
+
+	switch args.Op {
+		case "Put":
+			kv.kvs[args.Key] = args.Value
+		case "Append":
+			if ok {
+				kv.kvs[args.Key] = oldval + args.Value
+			} else {
+				kv.kvs[args.Key] = args.Value
+			}
+	}
+
+	reply.Err = OK
 }
