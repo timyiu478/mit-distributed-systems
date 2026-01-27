@@ -33,6 +33,15 @@ import "math/rand"
 
 import "time"
 
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
 type Proposer struct {
 	mu      	sync.Mutex
 	me        int
@@ -158,7 +167,7 @@ func (px *Paxos) Start(seq int, v interface{}) {
 }
 
 func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
-	// log.Println("Px:", px.me, ": start protocol for seq", seq)
+	DPrintf("Paxos %d: start protocol for seq %d", px.me, seq)
 
 	for !px.isdead() {
 		randMill := time.Duration(rand.Intn(150)) * time.Millisecond
@@ -169,7 +178,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		// Choose n, unique and higher than any n seen so far
 		n := p.newN()
 
-		// log.Println("Px", px.me, ": new n is", n.Num,"-",n.Id)
+		DPrintf("Px %d: new n is %d-%d", px.me, n.Num,n.Id)
 
 		// Reset accepted, prepareOK, maxN
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
@@ -179,7 +188,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		p.maxN      = Proposal{Num: -1, Id: px.me}
 
 		// Send prepare(n) to all servers including self
-		// log.Println("Px", px.me, ": send prepare(n) to all servers for seq", seq)
+		DPrintf("Px %d: send prepare(n) to all servers for seq %d", px.me, seq)
 
 		var wgPrep sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
@@ -228,7 +237,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		}
 
 		// Send accept(n, v') to all
-		// log.Println("Px", px.me, ": send accept(n, v') to all servers for seq", seq)
+		DPrintf("Px %d: send accept(n, v') to all servers for seq %d", px.me, seq)
 		var wgAccept sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			wgAccept.Add(1)
@@ -278,7 +287,7 @@ func (px *Paxos) startProtocol(p *Proposer, seq int, v interface{}) {
 		}
 		
 		// Send decided(v') to all
-		// log.Println("Px", px.me, ": send decided(v') to all servers for seq", seq)
+		DPrintf("Px %d: send decided(v') to all servers for seq %d", px.me, seq)
 		var wgDecided sync.WaitGroup
 		for i := 0; i < len(px.peers) && !px.isdead() ; i++ {
 			wgDecided.Add(1)
@@ -362,7 +371,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 		return nil
 	}
 
-	// log.Println("Px", px.me,": accept proprosal", args.Num.Num,"-",args.Num.Id, "for seq", args.SeqNum) 
+	DPrintf("Px %d: accept proprosal %d-%d for seq %d", px.me, args.Num.Num, args.Num.Id,args.SeqNum) 
 
 	px.instances[args.SeqNum].np 		= args.Num
 	px.instances[args.SeqNum].na 		= args.Num
@@ -403,7 +412,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
-	// log.Println("Px", px.me, ": Done(seq =", seq,")")
+	DPrintf("Px %d: Done(seq = %d)", px.me, seq)
 	px.updateDoneSeq(seq, px.me)
 	px.broadcastDoneSeqNum()
 }
@@ -698,7 +707,7 @@ func (px *Paxos) updateDoneSeq(doneSeq int, peerIdx int) {
 
 		px.minDoneSeqNum = minSeqNum
 		
-		// log.Println("Px ",px.me, ": updated done seq to", px.minDoneSeqNum)
+		DPrintf("Paxos %d: updated done seq to %d", px.me, px.minDoneSeqNum)
 	}
 }
 
@@ -742,7 +751,7 @@ func (p *Proposer) prepareReply(reply *PrepareReply) {
 	}
 
 	if reply.Err != OK {
-		// log.Println("Proposer", p.me, ": incorrect prepare reply err -", reply.Err)
+		DPrintf("Paxos: Proposer %d got incorrect prepare reply err - %s", p.me, reply.Err)
 		return
 	}
 	
@@ -765,7 +774,7 @@ func (p *Proposer) acceptReply(reply *AcceptReply) {
 	}
 
 	if reply.Err != OK {
-		// log.Println("Proposer", p.me, ": incorrect accept reply err -", reply.Err)
+		DPrintf("Paoxs: Proposer %d got incorrect accept reply err - %s", p.me, reply.Err)
 		return
 	}
 
@@ -782,7 +791,7 @@ func (p *Proposer) prepareOkCount() int {
 		if ok { count++ }
 	}
 
-	// log.Println("Prepare OK count is ", count)
+	DPrintf("Paxos: Proposer %d's Prepare OK count is %d", p.me, count)
 
 	return count
 }
@@ -797,7 +806,7 @@ func (p *Proposer) acceptedCount() int {
 		if ok { count++ }
 	}
 
-	// log.Println("Accept count is ", count)
+	DPrintf("Paxos: Proposer %d's Accept count is %d", p.me, count)
 
 	return count
 }
