@@ -4,7 +4,7 @@ import "net"
 import "fmt"
 import "net/rpc"
 import "log"
-import "paxos"
+import "lab/paxos"
 import "sync"
 import "sync/atomic"
 import "os"
@@ -13,22 +13,13 @@ import "encoding/gob"
 import "math/rand"
 
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
 		log.Printf(format, a...)
 	}
 	return
-}
-
-
-type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
-	Me          int // server id
-	Req    			interface{}
 }
 
 type KVPaxos struct {
@@ -43,21 +34,66 @@ type KVPaxos struct {
 	kvs 			 map[string]string
 	// Deduplication Detection
 	// Assume that each clerk has only one outstanding Put, Get, or Append
-	lastReqId  map[int64]int
-	replys     map[int64]interface{}
+	lastReqId  		map[int64]int
+	lastReplys    map[int64]interface{}
+	
+	// RSM
+	rsm        *RSM
 }
 
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
+	if isDup {
+		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+
+		reply.Value = lastReply.(GetReply).Value
+		reply.Err   = lastReply.(GetReply).Err
+		return nil
+	}
+
+	res := kv.rsm.Submit(*args)
+	
+	if res != nil {
+		reply.Err = res.(GetReply).Err
+		reply.Value = res.(GetReply).Value
+	}
+
 	return nil
 }
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
+	if isDup {
+		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+
+		reply.Err   = lastReply.(PutAppendReply).Err
+		return nil
+	}
+
+	res := kv.rsm.Submit(*args)
+	
+	if res != nil {
+		reply.Err = res.(PutAppendReply).Err
+	}
 
 	return nil
 }
+
+func (kv *KVPaxos) checkDeplicatedReq(clientId int64, reqId int) (bool, interface{}) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+
+	if reqId <= kv.lastReqId[clientId] {
+		return true, kv.lastReplys[clientId]
+	}
+
+	return false, struct{}{}
+}
+
 
 // tell the server to shut itself down.
 // please do not change these two functions.
@@ -86,6 +122,24 @@ func (kv *KVPaxos) isunreliable() bool {
 	return atomic.LoadInt32(&kv.unreliable) != 0
 }
 
+func (kv *KVPaxos) DoOp(req any) any {
+	switch r := req.(type) {
+		case GetArgs: {
+			reply := &GetReply{}
+			kv.get(&r, reply)
+			return *reply
+		}
+		case PutAppendArgs: {
+			reply := &PutAppendReply{}
+			kv.putAppend(&r, reply)
+			return *reply
+		}
+	}
+
+	// Invalid req
+	return nil
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
@@ -96,6 +150,10 @@ func StartServer(servers []string, me int) *KVPaxos {
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
+	gob.Register(PutAppendArgs{})
+	gob.Register(GetArgs{})
+	gob.Register(PutAppendReply{})
+	gob.Register(GetReply{})
 
 	kv := new(KVPaxos)
 	kv.me = me
@@ -106,6 +164,8 @@ func StartServer(servers []string, me int) *KVPaxos {
 	rpcs.Register(kv)
 
 	kv.px = paxos.Make(servers, me, rpcs)
+
+	kv.rsm = MakeRSM(me, kv.px, kv)
 
 	os.Remove(servers[me])
 	l, e := net.Listen("unix", servers[me])
@@ -151,6 +211,13 @@ func StartServer(servers []string, me int) *KVPaxos {
 }
 
 func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
+	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
+	if isDup {
+		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+
+		reply.Err   = lastReply.(GetReply).Err
+	}
+
 	val, ok := kv.kvs[args.Key]
 	if ok {
 		reply.Err   = OK
@@ -161,6 +228,13 @@ func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
+	if isDup {
+		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+
+		reply.Err   = lastReply.(PutAppendReply).Err
+	}
+
 	oldval, ok := kv.kvs[args.Key]
 
 	switch args.Op {

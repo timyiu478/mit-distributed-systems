@@ -77,6 +77,8 @@ func (ck *Clerk) Get(key string) string {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
+	DPrintf("CK %d: receives Get(key=%s) request", ck.id, key)
+
 	ck.seqId++
 
 	for {
@@ -85,11 +87,13 @@ func (ck *Clerk) Get(key string) string {
 		args := &GetArgs{
 			Key: 	 key,
 			Me:  	 ck.id,
-			SeqId: ck.seqId
+			SeqId: ck.seqId,
 		}
 		reply := &GetReply{}
 
-		ret := call(server, "KVPaxos.PutAppend", args, reply)
+		DPrintf("CK %d: send Get(key=%s) request to server %d", ck.id, key, ck.serverIdx)
+
+		ret := call(server, "KVPaxos.Get", args, reply)
 
 		if !ret {
 			ck.serverIdx = (ck.serverIdx + 1) % len(ck.servers)
@@ -115,6 +119,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	ck.seqId++
 
+	DPrintf("CK %d: receives PutAppend(key=%s,op=%s) request", ck.id, key, op)
+
 	if op != "Put" && op != "Append" {
 		// Invalid op
 		return
@@ -128,9 +134,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			Value: value,
 			Op:    op,
 			Me:  	 ck.id,
-			SeqId: ck.seqId
+			SeqId: ck.seqId,
 		}
 		reply := &PutAppendReply{}
+
+		DPrintf("CK %d: send PutAppend(key=%s,op=%s) request to server %d", ck.id, key, op, ck.serverIdx)
 
 		ret := call(server, "KVPaxos.PutAppend", args, reply)
 
@@ -139,7 +147,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			continue
 		}
 
-		if reply.Err == OK { return }
+		return
 	}
 }
 

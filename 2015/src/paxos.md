@@ -77,3 +77,9 @@ How to make progress on agreement for multiple instances at the same time:
 * It won't cope with crashes, since it stores neither the key/value database nor the Paxos state on disk. If one of the Paxos peers crashes, it will never be re-started.
 * It requires the set of servers to be fixed, so one cannot replace old servers.
 * It is slow: many Paxos messages are exchanged for each client operation.
+
+## Implementation Challenges
+
+* Multiple clients can compete the same instance slot in paxos. What should the client/server do if the client failed to obtain the instance slot?
+* Which log entry to use for a given client request?
+* How can servers handle multiple client requests concurrently?
