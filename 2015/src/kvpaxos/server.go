@@ -53,11 +53,14 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 		return nil
 	}
 
-	res := kv.rsm.Submit(*args)
-	
-	if res != nil {
-		reply.Err = res.(GetReply).Err
-		reply.Value = res.(GetReply).Value
+	for !kv.isdead() {
+		err, res := kv.rsm.Submit(*args)
+		
+		if err == OK {
+			reply.Err = res.(GetReply).Err
+			reply.Value = res.(GetReply).Value
+			break
+		}
 	}
 
 	return nil
@@ -73,10 +76,13 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		return nil
 	}
 
-	res := kv.rsm.Submit(*args)
-	
-	if res != nil {
-		reply.Err = res.(PutAppendReply).Err
+	for !kv.isdead() {
+		err, res := kv.rsm.Submit(*args)
+		
+		if err == OK {
+			reply.Err = res.(PutAppendReply).Err
+			break
+		}
 	}
 
 	return nil
@@ -102,6 +108,7 @@ func (kv *KVPaxos) kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.l.Close()
 	kv.px.Kill()
+	kv.rsm.Kill()
 }
 
 // call this to find out if the server is dead.
@@ -137,6 +144,7 @@ func (kv *KVPaxos) DoOp(req any) any {
 	}
 
 	// Invalid req
+	DPrintf("KV %d: DoOP receives invalid req", kv.me)
 	return nil
 }
 
@@ -159,12 +167,14 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv.me = me
 
 	// Your initialization code here.
+	kv.kvs = make(map[string]string)
+	kv.lastReqId = make(map[int64]int)
+	kv.lastReplys = make(map[int64]interface{})
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
 
 	kv.px = paxos.Make(servers, me, rpcs)
-
 	kv.rsm = MakeRSM(me, kv.px, kv)
 
 	os.Remove(servers[me])
@@ -215,7 +225,7 @@ func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
 	if isDup {
 		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
 
-		reply.Err   = lastReply.(GetReply).Err
+		reply.Err = lastReply.(GetReply).Err
 	}
 
 	val, ok := kv.kvs[args.Key]
@@ -232,7 +242,7 @@ func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if isDup {
 		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
 
-		reply.Err   = lastReply.(PutAppendReply).Err
+		reply.Err = lastReply.(PutAppendReply).Err
 	}
 
 	oldval, ok := kv.kvs[args.Key]

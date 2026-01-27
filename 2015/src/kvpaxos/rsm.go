@@ -13,7 +13,7 @@ type Op struct {
 	// otherwise RPC will break.
 	Me          int // server id
 	Id          int // op     id
-	Req    			interface{}
+	Req    			any
 }
 
 type OpRes struct {
@@ -37,7 +37,7 @@ type RSM struct {
 	callbacks         map[int]chan OpRes
 }
 
-func (rsm *RSM) kill() {
+func (rsm *RSM) Kill() {
 	atomic.StoreInt32(&rsm.dead, 1)
 }
 
@@ -49,10 +49,11 @@ func (rsm *RSM) isdead() bool {
 func MakeRSM(me int, px *paxos.Paxos, sm StateMachine) *RSM {
 	rsm := &RSM{}
 
+	atomic.StoreInt32(&rsm.dead, 0)
+
 	rsm.me = me
 	rsm.px = px
 	rsm.sm = sm
-	rsm.dead = 0
 	rsm.lastAppliedIndex = -1
 	rsm.opId = -1
 	rsm.callbacks = make(map[int]chan OpRes)
@@ -62,27 +63,28 @@ func MakeRSM(me int, px *paxos.Paxos, sm StateMachine) *RSM {
 	return rsm
 }
 
-func (rsm *RSM) Submit(req interface{}) any {
-	for {
-		opId, callback := rsm.start(req)
+func (rsm *RSM) Submit(req any) (Err, any) {
+	opId, callback := rsm.start(req)
 
+	for !rsm.isdead() {
 		select {
 			case <- time.After(time.Duration(100) * time.Millisecond):
 				if rsm.isdead() {
-					return nil
+					return ErrNotAccept, nil
 				}
-			case opRes, ok := <- callback:
-				if !ok || rsm.isdead() {
-					return nil
+			case opRes := <- callback:
+				DPrintf("RSM %d: opRes.id = %d, opRes.me = %d, opId = %d", rsm.me, opRes.id, opRes.me, opId)
+				if rsm.isdead() || opRes.id != opId || opRes.me != rsm.me {
+					return ErrNotAccept, nil
 				}
-				if opRes.id == opId && opRes.me == rsm.me {
-					return opRes.res
-				}
+				return OK, opRes.res
 		}
 	}
+
+	return ErrNotAccept, nil
 }
 
-func (rsm *RSM) start(req interface{}) (int, <-chan OpRes) {
+func (rsm *RSM) start(req any) (int, <-chan OpRes) {
 	rsm.mu.Lock()
 	defer rsm.mu.Unlock()
 
@@ -95,6 +97,8 @@ func (rsm *RSM) start(req interface{}) (int, <-chan OpRes) {
 	}
 
 	seq := rsm.px.Max() + 1
+
+	DPrintf("RSM %d: call px.Start(seq=%d, op.Me=%d, op.Id=%d)", rsm.me, seq, op.Me, op.Id)
 
 	rsm.px.Start(seq, op)
 
@@ -112,19 +116,18 @@ func (rsm *RSM) reader() {
 
 		if fate != paxos.Decided {
 			time.Sleep(to)
-			if to < 2 * time.Second {
+			if to < 1 * time.Second {
 				to *= 2
 			}
 			continue
 		}
+		to = 10 * time.Millisecond
 
 		DPrintf("RSM %d: find log entry %d is decided", rsm.me, seq)
 
-		to = 10 * time.Millisecond
-
 		op := val.(Op)
 
-		res := rsm.sm.DoOp(op)
+		res := rsm.sm.DoOp(op.Req)
 	
 		rsm.px.Done(seq)
 		

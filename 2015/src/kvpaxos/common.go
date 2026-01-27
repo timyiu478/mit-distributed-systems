@@ -3,6 +3,9 @@ package kvpaxos
 const (
 	OK       = "OK"
 	ErrNoKey = "ErrNoKey"
+
+	// Paxos
+	ErrNotAccept = "ErrNotAccept"
 )
 
 type Err string
