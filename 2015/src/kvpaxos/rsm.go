@@ -111,6 +111,12 @@ func (rsm *RSM) start(req any) (int, <-chan OpRes) {
 	return rsm.opId, rsm.callbacks[seq]
 }
 
+//
+// Try to read the decided instance in monotonically increasing order from index 0
+// If the instance is not decided, the reader will sleep `to` Millisecond
+// `to` Millisecond will increase exponentially if it < 1 second
+// and it will reset when the reader read a decided instance
+//
 func (rsm *RSM) reader() {
 	to := 10 * time.Millisecond
 

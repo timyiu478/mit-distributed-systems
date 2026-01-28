@@ -103,8 +103,10 @@ func (ck *Clerk) Get(key string) string {
 		switch reply.Err {
 			case OK:
 				return reply.Value
-			default:
+			case ErrNoKey:
 				return ""
+			default:
+				DPrintf("CK %d: unexpected err(%s) from server %d", ck.id, reply.Err, ck.serverIdx)
 		}
 	}
 }

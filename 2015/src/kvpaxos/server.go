@@ -13,7 +13,7 @@ import "encoding/gob"
 import "math/rand"
 
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -44,16 +44,23 @@ type KVPaxos struct {
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
-	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
-	if isDup {
-		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
-
-		reply.Value = lastReply.(GetReply).Value
-		reply.Err   = lastReply.(GetReply).Err
-		return nil
-	}
-
 	for !kv.isdead() {
+		kv.mu.Lock()
+		if args.SeqId <= kv.lastReqId[args.Me] {
+			DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+			if args.SeqId == kv.lastReqId[args.Me] {
+				reply.Err = kv.lastReplys[args.Me].(GetReply).Err
+				reply.Value = kv.lastReplys[args.Me].(GetReply).Value
+			}
+			kv.mu.Unlock()
+			// if args.SeqId < kv.lastReqId[args.Me], no need to set reply because
+			// (1) each clerk has only one outstanding Put, Get, or Append.
+			// (2) the client will never send a new request with a lower sequence number before the previous one has been successfully acknowledged.
+			// (3) kv.lastReqId[args.Me] implies replys with sequence numbr < kv.lastReqId[args.Me] are all acknowledged
+			return nil
+		}
+		kv.mu.Unlock()
+
 		err, res := kv.rsm.Submit(*args)
 		
 		if err == OK {
@@ -68,15 +75,18 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
-	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
-	if isDup {
-		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
-
-		reply.Err   = lastReply.(PutAppendReply).Err
-		return nil
-	}
-
 	for !kv.isdead() {
+		kv.mu.Lock()
+		if args.SeqId <= kv.lastReqId[args.Me] {
+			DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+			if args.SeqId == kv.lastReqId[args.Me] {
+				reply.Err = kv.lastReplys[args.Me].(PutAppendReply).Err
+			}
+			kv.mu.Unlock()
+			return nil
+		}
+		kv.mu.Unlock()
+
 		err, res := kv.rsm.Submit(*args)
 		
 		if err == OK {
@@ -88,16 +98,9 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	return nil
 }
 
-func (kv *KVPaxos) checkDeplicatedReq(clientId int64, reqId int) (bool, interface{}) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-
-	if reqId <= kv.lastReqId[clientId] {
-		return true, kv.lastReplys[clientId]
-	}
-
-	return false, struct{}{}
+func (kv *KVPaxos) updateLastReq(clientId int64, reqId int, reply interface{}) {
+	kv.lastReqId[clientId] = reqId
+	kv.lastReplys[clientId] = reply
 }
 
 
@@ -221,28 +224,39 @@ func StartServer(servers []string, me int) *KVPaxos {
 }
 
 func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
-	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
-	if isDup {
-		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
-		reply.Err = lastReply.(GetReply).Err
+	if args.SeqId <= kv.lastReqId[args.Me] {
+		DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+		if args.SeqId == kv.lastReqId[args.Me] {
+			reply.Err = kv.lastReplys[args.Me].(GetReply).Err
+			reply.Value = kv.lastReplys[args.Me].(GetReply).Value
+		}
+		return
 	}
+
+	reply.Err   = ErrNoKey
 
 	val, ok := kv.kvs[args.Key]
 	if ok {
 		reply.Err   = OK
 		reply.Value = val
-		return
 	}
-	reply.Err   = ErrNoKey
+
+	kv.updateLastReq(args.Me, args.SeqId, *reply)
 }
 
 func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	isDup, lastReply := kv.checkDeplicatedReq(args.Me, args.SeqId)
-	if isDup {
-		DPrintf("Server %d: request %d is duplicated", kv.me, args.SeqId)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
-		reply.Err = lastReply.(PutAppendReply).Err
+	if args.SeqId <= kv.lastReqId[args.Me] {
+		DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+		if args.SeqId == kv.lastReqId[args.Me] {
+			reply.Err = kv.lastReplys[args.Me].(PutAppendReply).Err
+		}
+		return
 	}
 
 	oldval, ok := kv.kvs[args.Key]
@@ -259,4 +273,6 @@ func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	reply.Err = OK
+
+	kv.updateLastReq(args.Me, args.SeqId, *reply)
 }
