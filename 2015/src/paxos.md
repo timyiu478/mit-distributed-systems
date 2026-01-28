@@ -5,7 +5,7 @@
 Videos: 
 
 * Paxos Consensus Module: https://ty478.wistia.com/medias/unutii77tr
-* Paxos-based Fault-tolerant Key/Value Store:
+* Paxos-based Fault-tolerant Key/Value Store: https://ty478.wistia.com/medias/w7zrvexfy5
 
 Runtime Specifications:
 
