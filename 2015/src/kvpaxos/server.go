@@ -4,7 +4,7 @@ import "net"
 import "fmt"
 import "net/rpc"
 import "log"
-import "paxos"
+import "lab/paxos"
 import "sync"
 import "sync/atomic"
 import "os"
@@ -13,20 +13,13 @@ import "encoding/gob"
 import "math/rand"
 
 
-const Debug = 0
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
+	if Debug {
 		log.Printf(format, a...)
 	}
 	return
-}
-
-
-type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
 }
 
 type KVPaxos struct {
@@ -38,19 +31,78 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	kvs 			 map[string]string
+	// Deduplication Detection
+	// Assume that each clerk has only one outstanding Put, Get, or Append
+	lastReqId  		map[int64]int
+	lastReplys    map[int64]interface{}
+	
+	// RSM
+	rsm        *RSM
 }
 
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	for !kv.isdead() {
+		kv.mu.Lock()
+		if args.SeqId <= kv.lastReqId[args.Me] {
+			DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+			if args.SeqId == kv.lastReqId[args.Me] {
+				reply.Err = kv.lastReplys[args.Me].(GetReply).Err
+				reply.Value = kv.lastReplys[args.Me].(GetReply).Value
+			}
+			kv.mu.Unlock()
+			// if args.SeqId < kv.lastReqId[args.Me], no need to set reply because
+			// (1) each clerk has only one outstanding Put, Get, or Append.
+			// (2) the client will never send a new request with a lower sequence number before the previous one has been successfully acknowledged.
+			// (3) kv.lastReqId[args.Me] implies replys with sequence numbr < kv.lastReqId[args.Me] are all acknowledged
+			return nil
+		}
+		kv.mu.Unlock()
+
+		err, res := kv.rsm.Submit(*args)
+		
+		if err == OK {
+			reply.Err = res.(GetReply).Err
+			reply.Value = res.(GetReply).Value
+			break
+		}
+	}
+
 	return nil
 }
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	for !kv.isdead() {
+		kv.mu.Lock()
+		if args.SeqId <= kv.lastReqId[args.Me] {
+			DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+			if args.SeqId == kv.lastReqId[args.Me] {
+				reply.Err = kv.lastReplys[args.Me].(PutAppendReply).Err
+			}
+			kv.mu.Unlock()
+			return nil
+		}
+		kv.mu.Unlock()
+
+		err, res := kv.rsm.Submit(*args)
+		
+		if err == OK {
+			reply.Err = res.(PutAppendReply).Err
+			break
+		}
+	}
 
 	return nil
 }
+
+func (kv *KVPaxos) updateLastReq(clientId int64, reqId int, reply interface{}) {
+	kv.lastReqId[clientId] = reqId
+	kv.lastReplys[clientId] = reply
+}
+
 
 // tell the server to shut itself down.
 // please do not change these two functions.
@@ -59,6 +111,7 @@ func (kv *KVPaxos) kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.l.Close()
 	kv.px.Kill()
+	kv.rsm.Kill()
 }
 
 // call this to find out if the server is dead.
@@ -79,6 +132,25 @@ func (kv *KVPaxos) isunreliable() bool {
 	return atomic.LoadInt32(&kv.unreliable) != 0
 }
 
+func (kv *KVPaxos) DoOp(req any) any {
+	switch r := req.(type) {
+		case GetArgs: {
+			reply := &GetReply{}
+			kv.get(&r, reply)
+			return *reply
+		}
+		case PutAppendArgs: {
+			reply := &PutAppendReply{}
+			kv.putAppend(&r, reply)
+			return *reply
+		}
+	}
+
+	// Invalid req
+	DPrintf("KV %d: DoOP receives invalid req", kv.me)
+	return nil
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
@@ -89,16 +161,24 @@ func StartServer(servers []string, me int) *KVPaxos {
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
+	gob.Register(PutAppendArgs{})
+	gob.Register(GetArgs{})
+	gob.Register(PutAppendReply{})
+	gob.Register(GetReply{})
 
 	kv := new(KVPaxos)
 	kv.me = me
 
 	// Your initialization code here.
+	kv.kvs = make(map[string]string)
+	kv.lastReqId = make(map[int64]int)
+	kv.lastReplys = make(map[int64]interface{})
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
 
 	kv.px = paxos.Make(servers, me, rpcs)
+	kv.rsm = MakeRSM(me, kv.px, kv)
 
 	os.Remove(servers[me])
 	l, e := net.Listen("unix", servers[me])
@@ -141,4 +221,58 @@ func StartServer(servers []string, me int) *KVPaxos {
 	}()
 
 	return kv
+}
+
+func (kv *KVPaxos) get(args *GetArgs, reply *GetReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if args.SeqId <= kv.lastReqId[args.Me] {
+		DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+		if args.SeqId == kv.lastReqId[args.Me] {
+			reply.Err = kv.lastReplys[args.Me].(GetReply).Err
+			reply.Value = kv.lastReplys[args.Me].(GetReply).Value
+		}
+		return
+	}
+
+	reply.Err   = ErrNoKey
+
+	val, ok := kv.kvs[args.Key]
+	if ok {
+		reply.Err   = OK
+		reply.Value = val
+	}
+
+	kv.updateLastReq(args.Me, args.SeqId, *reply)
+}
+
+func (kv *KVPaxos) putAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if args.SeqId <= kv.lastReqId[args.Me] {
+		DPrintf("KV %d: args.SeqId(%d) <= kv.lastReqId[args.Me](%d)", kv.me, args.SeqId, kv.lastReqId[args.Me])
+		if args.SeqId == kv.lastReqId[args.Me] {
+			reply.Err = kv.lastReplys[args.Me].(PutAppendReply).Err
+		}
+		return
+	}
+
+	oldval, ok := kv.kvs[args.Key]
+
+	switch args.Op {
+		case "Put":
+			kv.kvs[args.Key] = args.Value
+		case "Append":
+			if ok {
+				kv.kvs[args.Key] = oldval + args.Value
+			} else {
+				kv.kvs[args.Key] = args.Value
+			}
+	}
+
+	reply.Err = OK
+
+	kv.updateLastReq(args.Me, args.SeqId, *reply)
 }

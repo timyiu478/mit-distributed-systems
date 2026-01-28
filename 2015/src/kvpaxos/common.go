@@ -3,6 +3,9 @@ package kvpaxos
 const (
 	OK       = "OK"
 	ErrNoKey = "ErrNoKey"
+
+	// Paxos
+	ErrNotAccept = "ErrNotAccept"
 )
 
 type Err string
@@ -16,6 +19,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Me  		int64
+	SeqId		int
 }
 
 type PutAppendReply struct {
@@ -25,6 +30,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	Me  		int64
+	SeqId		int
 }
 
 type GetReply struct {
