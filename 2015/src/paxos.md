@@ -83,3 +83,23 @@ How to make progress on agreement for multiple instances at the same time:
 * Multiple clients can compete the same instance slot in paxos. What should the client/server do if the client failed to obtain the instance slot?
 * Which log entry to use for a given client request?
 * How can servers handle multiple client requests concurrently?
+
+---
+
+## Implementation Log
+
+This section documents some of the mistakes/decisions I made during development.
+
+### RSM
+
+Q. Why we should not use `op.Id` as the index to look up `rsm.callbacks` map?
+
+Related commit hash: 893a562
+
+The `op.Id` increases only when the peer propose a new instance.
+It is possible that more than one paxos peer to compete the same instance slot.
+They can propose the instances `Op` for the same slot that the field `op.Id` of their instances can be different.
+For example, peer 1 and peer 2 are competing instance slot 3. Peer 1's instance `op.Id` is `3` and peer 2's instance `op.Id` is `0`.
+Peer 1 waits for callback `rsm.callbacks[3]` and peer 2 waits for callback `rsm.callbacks[0]`.
+If peer 1(2) wins the instance slot, the result of the operation execution will be passed to `rsm.callbacks[3]`(`rsm.callbacks[0]`).
+Then peer 2(1) will wait `rsm.callbacks[0]`(`rsm.callbacks[3]`) forever.
