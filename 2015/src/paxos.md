@@ -137,7 +137,7 @@ This section documents some of the mistakes/decisions I made during development.
 
 Q. Why we should not use `op.Id` as the index to look up `rsm.callbacks` map?
 
-Related commit hash: 893a562
+Related source code: [893a562](https://github.com/timyiu478/mit-distributed-systems/blob/893a562ce2a673da2ad51788391b8ce3da4afd2e/2015/src/kvpaxos/rsm.go#L150)
 
 The `op.Id` increases only when the peer propose a new instance.
 It is possible that more than one paxos peer to compete the same instance slot.
