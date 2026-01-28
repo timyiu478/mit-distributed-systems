@@ -13,10 +13,10 @@ import "encoding/gob"
 import "math/rand"
 
 
-const Debug = 1
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
+	if Debug {
 		log.Printf(format, a...)
 	}
 	return

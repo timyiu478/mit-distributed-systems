@@ -98,63 +98,71 @@ func (rsm *RSM) start(req any) (int, <-chan OpRes) {
 
 	seq := rsm.px.Max() + 1
 
+	if seq <= rsm.lastAppliedIndex {
+		seq = rsm.lastAppliedIndex + 1
+	}
+
 	DPrintf("RSM %d: call px.Start(seq=%d, op.Me=%d, op.Id=%d)", rsm.me, seq, op.Me, op.Id)
 
 	rsm.px.Start(seq, op)
 
-	rsm.callbacks[op.Id] = make(chan OpRes)
+	rsm.callbacks[seq] = make(chan OpRes)
 
-	return rsm.opId, rsm.callbacks[op.Id]
+	return rsm.opId, rsm.callbacks[seq]
 }
 
 func (rsm *RSM) reader() {
 	to := 10 * time.Millisecond
 
 	for !rsm.isdead() {
-		seq := rsm.lastAppliedIndex + 1
-		fate, val := rsm.px.Status(seq)
-
-		if fate != paxos.Decided {
+		if !rsm.read() {
 			time.Sleep(to)
 			if to < 1 * time.Second {
 				to *= 2
 			}
-			continue
 		}
 		to = 10 * time.Millisecond
-
-		DPrintf("RSM %d: find log entry %d is decided", rsm.me, seq)
-
-		op := val.(Op)
-
-		res := rsm.sm.DoOp(op.Req)
-	
-		rsm.px.Done(seq)
-		
-		rsm.lastAppliedIndex = seq
-
-		opRes := OpRes{
-			me: op.Me,
-			id: op.Id,
-			res: res,
-		}
-
-		rsm.sendOpRes(opRes)
 	}
 }
 
-func (rsm *RSM) sendOpRes(opRes OpRes) {
+func (rsm *RSM) read() bool {
 	rsm.mu.Lock()
 	defer rsm.mu.Unlock()
 
-	callback, ok := rsm.callbacks[opRes.id]
+	seq := rsm.lastAppliedIndex + 1
+
+	fate, val := rsm.px.Status(seq)
+
+	if fate != paxos.Decided {
+		return false
+	}
+
+	DPrintf("RSM %d: find log entry %d is decided", rsm.me, seq)
+
+	op := val.(Op)
+
+	res := rsm.sm.DoOp(op.Req)
+
+	rsm.lastAppliedIndex = seq
+
+	rsm.px.Done(seq)
+
+	opRes := OpRes{
+		me: op.Me,
+		id: op.Id,
+		res: res,
+	}
+
+	callback, ok := rsm.callbacks[seq]
 
 	if ok {
-		DPrintf("RSM %d: send opRes %d to callback", rsm.me, opRes.id)
+		DPrintf("RSM %d: send opRes %d to callback, seq is %d", rsm.me, opRes.id, seq)
 
 		callback <- opRes
 
 		close(callback)
-		delete(rsm.callbacks, opRes.id)
+		delete(rsm.callbacks, seq)
 	}
+
+	return true
 }
