@@ -2,13 +2,18 @@
 
 ## Test Results
 
-Video: https://ty478.wistia.com/medias/unutii77tr
+Videos: 
+
+* Paxos Consensus Module: https://ty478.wistia.com/medias/unutii77tr
+* Paxos-based Fault-tolerant Key/Value Store:
 
 Runtime Specifications:
 
 * CPU: 2.3 GHz Quad-Core Intel Core i5
 * Memory: 8 GB 2133 MHz LPDDR3
 * OS: macOS 15.3.1
+
+Paxos Consensus Module: 
 
 ```
 Test: Single proposer ...
@@ -53,9 +58,42 @@ PASS
 ok  	lab/paxos	88.427s
 ```
 
+Paxos-based Fault-tolerant Key/Value Store:
+
+```
+Test: Basic put/append/get ...
+  ... Passed
+Test: Concurrent clients ...
+  ... Passed
+Test: server frees Paxos log memory...
+  ... Passed
+Test: No partition ...
+  ... Passed
+Test: Progress in majority ...
+  ... Passed
+Test: No progress in minority ...
+  ... Passed
+Test: Completion after heal ...
+  ... Passed
+Test: Basic put/get, unreliable ...
+  ... Passed
+Test: Sequence of puts, unreliable ...
+  ... Passed
+Test: Concurrent clients, unreliable ...
+  ... Passed
+Test: Concurrent Append to same key, unreliable ...
+  ... Passed
+Test: Tolerates holes in paxos sequence ...
+  ... Passed
+Test: Many clients, changing partitions ...
+  ... Passed
+PASS
+ok  	lab/kvpaxos	133.270s
+```
+
 ## Interfaces
 
-Paxos:
+Paxos Consensus Module:
 
 ```
 px = paxos.Make(peers []string, me int)
