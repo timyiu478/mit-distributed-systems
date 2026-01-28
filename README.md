@@ -16,7 +16,7 @@ My completed projects at a glance:
 | 3 | Fault-tolerant Key/Value Service |  A fault-tolerant key/value storage service using your Raft library | [Here](labs/src/kvraft1) | `Raft`, `Replicated State Machine`, `Snapshot`, `KV-Store`  |
 | 4 | Primary-Backup Key/Value Service | A primary/backup replication, assisted by a view service that decides which machines are alive and allows the system to have strong consistency in the presence of a network partition | [Here](2015/src/primary-backup.md) | `Primary-Backup`, `View Service`, `KV-Store`  |
 | 5 |  Sharded Key/Value Service | A highly-available sharded key/value service with many shard groups for scalability, reconfiguration to handle changes in load, and with a fault-tolerant controller | [Here](labs/src/shardkv1) | `Configuration`, `Sharding` |
-| 6 |  **Paxos** | A Paxos library's interface that supports an indefinite sequence of agreement "instances" | [Here](2015/src/paxos.md) | `Consensus`, `Peer-to-Peer` |
+| 6 |  **Paxos-based Fault-Tolerant Key/Value Store** | The Paxos library's interface that supports an indefinite sequence of agreement "instances". The kvpaxos servers will use Paxos to agree on the order in which client `Put()`s, `Append()`s, and `Get()`s execute | [Here](2015/src/paxos.md) | `Consensus`, `Peer-to-Peer` |
 
 # Readings
 

@@ -3,12 +3,17 @@ package kvpaxos
 import "net/rpc"
 import "crypto/rand"
 import "math/big"
+import "sync"
 
 import "fmt"
 
 type Clerk struct {
 	servers []string
 	// You will have to modify this struct.
+	mu      sync.Mutex
+	id      	int64
+	seqId   	int
+	serverIdx int
 }
 
 func nrand() int64 {
@@ -22,6 +27,9 @@ func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.id      		= nrand()
+	ck.seqId   		= 0
+	ck.serverIdx 	= 0
 	return ck
 }
 
@@ -66,7 +74,41 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	DPrintf("CK %d: receives Get(key=%s) request", ck.id, key)
+
+	ck.seqId++
+
+	for {
+		server := ck.servers[ck.serverIdx]
+
+		args := &GetArgs{
+			Key: 	 key,
+			Me:  	 ck.id,
+			SeqId: ck.seqId,
+		}
+		reply := &GetReply{}
+
+		DPrintf("CK %d: send Get(key=%s) request to server %d", ck.id, key, ck.serverIdx)
+
+		ret := call(server, "KVPaxos.Get", args, reply)
+
+		if !ret {
+			ck.serverIdx = (ck.serverIdx + 1) % len(ck.servers)
+			continue
+		}
+
+		switch reply.Err {
+			case OK:
+				return reply.Value
+			case ErrNoKey:
+				return ""
+			default:
+				DPrintf("CK %d: unexpected err(%s) from server %d", ck.id, reply.Err, ck.serverIdx)
+		}
+	}
 }
 
 //
@@ -74,6 +116,41 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+
+	ck.seqId++
+
+	DPrintf("CK %d: receives PutAppend(key=%s,op=%s) request", ck.id, key, op)
+
+	if op != "Put" && op != "Append" {
+		// Invalid op
+		return
+	}
+
+	for {
+		server := ck.servers[ck.serverIdx]
+
+		args := &PutAppendArgs{
+			Key: 	 key,
+			Value: value,
+			Op:    op,
+			Me:  	 ck.id,
+			SeqId: ck.seqId,
+		}
+		reply := &PutAppendReply{}
+
+		DPrintf("CK %d: send PutAppend(key=%s,op=%s) request to server %d", ck.id, key, op, ck.serverIdx)
+
+		ret := call(server, "KVPaxos.PutAppend", args, reply)
+
+		if !ret {
+			ck.serverIdx = (ck.serverIdx + 1) % len(ck.servers)
+			continue
+		}
+
+		return
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
